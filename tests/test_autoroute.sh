@@ -135,7 +135,7 @@ print('  auto_route completed.')
 print('  Saving routed layout...')
 r, data = mcp_request('tools/call', {
     'name': 'save_layout',
-    'arguments': {'filename': '$GDS_ROUTED'},
+    'arguments': {'filepath': '$GDS_ROUTED'},
 }, req_id=4, session_id=session_id, timeout=30)
 
 if 'error' in data:

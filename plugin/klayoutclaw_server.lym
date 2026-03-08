@@ -378,19 +378,20 @@ def _tool_auto_route(args):
     _layout.write(input_gds, save_opts)
     _log("auto_route: saved layout to {}".format(input_gds))
 
-    # Write config JSON
+    # Write config JSON (field names must match route_worker.py expectations)
     config = {
-        "input_gds": input_gds,
-        "output_json": output_json,
+        "gds_path": input_gds,
+        "output_path": output_json,
+        "cell_name": _top_cell.name if _top_cell else "TOP",
+        "dbu": _layout.dbu,
         "pin_layer_a": pin_layer_a,
         "pin_layer_b": pin_layer_b,
         "obstacle_layers": obstacle_layers,
         "output_layer": output_layer,
-        "path_width": path_width,
-        "obs_safe_distance": obs_safe_distance,
-        "path_safe_distance": path_safe_distance,
-        "map_resolution": map_resolution,
-        "dbu": _layout.dbu,
+        "path_width_um": path_width,
+        "obs_safe_distance_um": obs_safe_distance,
+        "path_safe_distance_um": path_safe_distance,
+        "map_resolution_um": map_resolution,
     }
     with open(config_json, "w") as f:
         json.dump(config, f)
@@ -442,8 +443,8 @@ def _tool_auto_route(args):
     with open(output_json, "r") as f:
         result = json.load(f)
 
-    if result.get("status") != "ok":
-        raise ValueError("Routing failed: {}".format(result.get("error", "unknown")))
+    if result.get("status") == "error":
+        raise ValueError("Routing failed: {}".format("; ".join(result.get("errors", ["unknown"]))))
 
     # Insert routed paths into layout
     ol_parts = output_layer.split("/")
@@ -453,7 +454,7 @@ def _tool_auto_route(args):
     dbu = _layout.dbu
     path_width_dbu = int(round(path_width / dbu))
 
-    routes = result.get("routes", [])
+    routes = result.get("paths", [])
     inserted = 0
     for route in routes:
         pts = route.get("points_dbu", [])
@@ -479,11 +480,13 @@ def _tool_auto_route(args):
         pass
 
     return json.dumps({
-        "status": "ok",
-        "routes_inserted": inserted,
-        "total_routes": len(routes),
+        "status": result.get("status", "unknown"),
+        "routed_pairs": inserted,
+        "total_pins_a": result.get("total_pins_a", 0),
+        "total_pins_b": result.get("total_pins_b", 0),
         "output_layer": output_layer,
         "path_width_um": path_width,
+        "errors": result.get("errors", []),
     })
 
 
