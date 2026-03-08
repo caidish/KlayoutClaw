@@ -5,6 +5,9 @@
 test_hallbar.gds
 test_hallbar.png
 
+# Demo artifacts (generated)
+docs/demo.gif
+
 # Python
 __pycache__/
 *.py[cod]
