@@ -1,0 +1,30 @@
+# KLayout source (reference only)
+.klayout/
+
+# Test outputs (generated)
+test_hallbar.gds
+test_hallbar.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code (share settings, ignore per-user memory)
+.claude/memory/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,585 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>KlayoutClaw MCP Server</description>
+ <version>0.3</version>
+ <category>pymacros</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>true</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name/>
+ <menu-path/>
+ <interpreter>python</interpreter>
+ <dsl-interpreter-name/>
+ <text>
+import sys
+import os
+
+# Early log to verify macro execution
+_early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
+with open(_early_log, "a") as _f:
+    _f.write("MACRO STARTED (v0.3 QTcpServer)\n")
+
+try:
+    import pya
+    with open(_early_log, "a") as _f:
+        _f.write("PYA IMPORTED\n")
+except Exception as _e:
+    with open(_early_log, "a") as _f:
+        _f.write("PYA IMPORT FAILED: {}\n".format(_e))
+
+import json
+import re
+import uuid
+import datetime
+
+with open(_early_log, "a") as _f:
+    _f.write("ALL IMPORTS OK\n")
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+_log_path = os.path.expanduser("~/.klayout/klayoutclaw.log")
+
+
+def _log(msg):
+    ts = datetime.datetime.now().isoformat()
+    line = "[{}] {}".format(ts, msg)
+    try:
+        with open(_log_path, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    print("[KlayoutClaw] " + msg)
+    try:
+        if "_klayoutclaw" in sys.modules:
+            cb = sys.modules["_klayoutclaw"]
+            if msg.startswith("ERROR") and getattr(cb, "on_error", None):
+                cb.on_error(msg)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# UI callback slots (shared via sys.modules["_klayoutclaw"])
+# ---------------------------------------------------------------------------
+
+import types as _types
+if "_klayoutclaw" not in sys.modules:
+    _claw_cb = _types.ModuleType("_klayoutclaw")
+    _claw_cb.on_request = None       # fn(method, timestamp, success, error_msg)
+    _claw_cb.on_server_start = None  # fn(port)
+    _claw_cb.on_error = None         # fn(error_msg)
+    _claw_cb.server_port = None      # int, set when server starts
+    sys.modules["_klayoutclaw"] = _claw_cb
+
+
+def _notify_request(method, success, error_msg=None):
+    """Notify UI of a request (no-op if UI not loaded)."""
+    try:
+        cb = sys.modules.get("_klayoutclaw")
+        if cb and cb.on_request:
+            cb.on_request(method, datetime.datetime.now().strftime("%H:%M:%S"), success, error_msg)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Layout state
+# ---------------------------------------------------------------------------
+
+_layout_view = None
+_layout = None
+_top_cell = None
+
+
+def _get_or_create_view():
+    global _layout_view, _layout, _top_cell
+    mw = pya.Application.instance().main_window()
+    if mw is None:
+        raise ValueError("KLayout main window not available")
+    if mw.views() == 0:
+        mw.create_layout(0)
+    _layout_view = mw.current_view()
+    if _layout_view is None:
+        raise ValueError("No layout view available")
+    cv = _layout_view.active_cellview()
+    if cv is None or not cv.is_valid():
+        mw.create_layout(0)
+        _layout_view = mw.current_view()
+        cv = _layout_view.active_cellview()
+    _layout = cv.layout()
+    if _layout.cells() == 0:
+        _top_cell = _layout.create_cell("TOP")
+    else:
+        _top_cell = _layout.top_cell()
+    return _layout_view, _layout, _top_cell
+
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+_session_id = None
+
+
+def _ensure_session():
+    global _session_id
+    if _session_id is None:
+        _session_id = str(uuid.uuid4())
+    return _session_id
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "name": "create_layout",
+        "description": "Create a new layout with a top cell. Returns the cell name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Top cell name", "default": "TOP"},
+                "dbu": {"type": "number", "description": "Database unit in microns", "default": 0.001}
+            }
+        }
+    },
+    {
+        "name": "execute_script",
+        "description": "Execute arbitrary Python/pya code in KLayout. The namespace includes: pya, json, os, _layout, _layout_view, _top_cell, _get_or_create_view(), _refresh_view(). Set the variable 'result' to return data (will be serialized as JSON). The view is refreshed automatically after execution.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code to execute"}
+            },
+            "required": ["code"]
+        }
+    },
+    {
+        "name": "save_layout",
+        "description": "Save the current layout to a file. Format: GDS2 or OASIS.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filepath": {"type": "string", "description": "Output file path"},
+                "format": {"type": "string", "description": "File format (GDS2 or OASIS)", "default": "GDS2"}
+            },
+            "required": ["filepath"]
+        }
+    },
+    {
+        "name": "get_layout_info",
+        "description": "Get summary information about the current layout.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    }
+]
+
+
+# ---------------------------------------------------------------------------
+# View refresh helper
+# ---------------------------------------------------------------------------
+
+_LAYER_STYLES = {
+    # (layer, datatype): (fill_color, frame_color, transparent)
+    # Colors as 0xRRGGBB integers
+    (1, 0): (0x4169E1, 0x1A3A8A, False),   # Mesa: royal blue, solid
+    (2, 0): (0xFF8C00, 0xB35F00, True),     # Metal: dark orange, transparent
+    (3, 0): (0xFFD700, 0xB39700, False),    # Pads: gold, solid
+    (4, 0): (0x32CD32, 0x1E7A1E, True),     # green, transparent
+    (5, 0): (0xDC143C, 0x8B0A25, False),    # crimson, solid
+    (6, 0): (0x8A2BE2, 0x5A1D96, True),     # violet, transparent
+}
+
+_FALLBACK_COLORS = [
+    0x17BECF, 0xE377C2, 0x7F7F7F, 0xBCBD22,
+    0x8C564B, 0x9467BD, 0xD62728, 0x2CA02C,
+]
+
+
+def _refresh_view():
+    """Update KLayout's GUI to show current layout state with per-layer styling."""
+    global _layout_view, _layout
+    if _layout_view is None or _layout is None:
+        return
+    fallback_idx = 0
+    for li in _layout.layer_indices():
+        info = _layout.get_info(li)
+        key = (info.layer, info.datatype)
+        # Check if this layer already has a layer properties entry
+        found = False
+        lp_iter = _layout_view.begin_layers()
+        while not lp_iter.at_end():
+            lp = lp_iter.current()
+            if lp.source_layer == info.layer and lp.source_datatype == info.datatype:
+                found = True
+                break
+            lp_iter.next()
+        if not found:
+            lp = pya.LayerProperties()
+            lp.source_layer = info.layer
+            lp.source_datatype = info.datatype
+            style = _LAYER_STYLES.get(key)
+            if style:
+                lp.fill_color = style[0]
+                lp.frame_color = style[1]
+                lp.transparent = style[2]
+            else:
+                c = _FALLBACK_COLORS[fallback_idx % len(_FALLBACK_COLORS)]
+                lp.fill_color = c
+                lp.frame_color = c
+                lp.transparent = True
+                fallback_idx += 1
+            _layout_view.insert_layer(lp_iter, lp)
+    _layout_view.zoom_fit()
+
+
+# ---------------------------------------------------------------------------
+# Tool handlers — all run on Qt main thread (no dispatch needed)
+# ---------------------------------------------------------------------------
+
+def _tool_create_layout(args):
+    global _layout_view, _layout, _top_cell
+    name = args.get("name", "TOP")
+    dbu = args.get("dbu", 0.001)
+    mw = pya.Application.instance().main_window()
+    mw.create_layout(0)
+    _layout_view = mw.current_view()
+    cv = _layout_view.active_cellview()
+    _layout = cv.layout()
+    _layout.dbu = dbu
+    _top_cell = _layout.create_cell(name)
+    _layout_view.active_cellview().cell = _top_cell
+    _refresh_view()
+    return json.dumps({"status": "ok", "top_cell": _top_cell.name, "dbu": dbu})
+
+
+def _tool_execute_script(args):
+    global _layout, _layout_view, _top_cell
+    code = args.get("code")
+    if not code:
+        raise ValueError("Missing required parameter: code")
+    ns = {
+        "pya": pya,
+        "json": json,
+        "os": os,
+        "_layout": _layout,
+        "_layout_view": _layout_view,
+        "_top_cell": _top_cell,
+        "_get_or_create_view": _get_or_create_view,
+        "_refresh_view": _refresh_view,
+    }
+    exec(code, ns)
+    # Update globals in case script called _get_or_create_view()
+    if ns.get("_layout") is not _layout:
+        _layout = ns["_layout"]
+    if ns.get("_layout_view") is not _layout_view:
+        _layout_view = ns["_layout_view"]
+    if ns.get("_top_cell") is not _top_cell:
+        _top_cell = ns["_top_cell"]
+    _refresh_view()
+    result = ns.get("result", {"status": "ok"})
+    if isinstance(result, str):
+        return result
+    return json.dumps(result)
+
+
+def _tool_save_layout(args):
+    global _layout
+    filepath = args.get("filepath")
+    fmt = args.get("format", "GDS2")
+    if not filepath:
+        raise ValueError("Missing required parameter: filepath")
+    if _layout is None:
+        _get_or_create_view()
+    abs_path = os.path.abspath(filepath)
+    save_opts = pya.SaveLayoutOptions()
+    if fmt.upper() == "OASIS":
+        save_opts.format = "OASIS"
+    else:
+        save_opts.format = "GDS2"
+    _layout.write(abs_path, save_opts)
+    return json.dumps({"status": "ok", "filepath": abs_path, "format": fmt})
+
+
+def _tool_get_layout_info(args):
+    global _layout
+    if _layout is None:
+        _get_or_create_view()
+    cells = []
+    for ci in range(_layout.cells()):
+        c = _layout.cell(ci)
+        if c is not None:
+            cells.append(c.name)
+    layer_count = len(list(_layout.layer_indices()))
+    return json.dumps({"status": "ok", "dbu": _layout.dbu, "num_cells": len(cells), "cells": cells, "num_layers": layer_count})
+
+
+_TOOL_DISPATCH = {
+    "create_layout": _tool_create_layout,
+    "execute_script": _tool_execute_script,
+    "save_layout": _tool_save_layout,
+    "get_layout_info": _tool_get_layout_info,
+}
+
+
+# ---------------------------------------------------------------------------
+# JSON-RPC 2.0 dispatcher
+# ---------------------------------------------------------------------------
+
+MAX_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
+
+
+def _handle_jsonrpc(body_str):
+    """Parse a JSON-RPC 2.0 request and return (response_dict_or_None, http_status)."""
+    try:
+        req = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError) as e:
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error: " + str(e)}}, 200
+
+    req_id = req.get("id")
+    method = req.get("method")
+    params = req.get("params", {})
+
+    _log("JSON-RPC method={} id={}".format(method, req_id))
+
+    if not method:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "Invalid Request: missing method"}}, 200
+
+    # --- initialize ---
+    if method == "initialize":
+        sid = _ensure_session()
+        result = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "KlayoutClaw", "version": "0.3"}
+        }
+        _notify_request(method, True)
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}, 200
+
+    # --- notifications/initialized ---
+    if method == "notifications/initialized":
+        # Notification — no response body needed
+        return None, 200
+
+    # --- tools/list ---
+    if method == "tools/list":
+        result = {"tools": TOOLS}
+        _notify_request(method, True)
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}, 200
+
+    # --- tools/call ---
+    if method == "tools/call":
+        tool_name = params.get("name")
+        tool_args = params.get("arguments", {})
+        handler = _TOOL_DISPATCH.get(tool_name)
+        if handler is None:
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Tool not found: {}".format(tool_name)}}, 200
+        try:
+            result_str = handler(tool_args)
+            _notify_request("tools/call:" + tool_name, True)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": result_str}]}}, 200
+        except ValueError as e:
+            _notify_request("tools/call:" + tool_name, False, str(e))
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": str(e)}}, 200
+        except Exception as e:
+            _log("Tool error: {} — {}".format(tool_name, e))
+            _notify_request("tools/call:" + tool_name, False, str(e))
+            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": "Internal error: " + str(e)}}, 200
+
+    # --- unknown method ---
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found: {}".format(method)}}, 200
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _http_response(status_code, body_str, extra_headers=None):
+    """Build a complete HTTP/1.0 response string."""
+    reason = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 500: "Internal Server Error"}.get(status_code, "Error")
+    headers = "HTTP/1.0 {} {}\r\n".format(status_code, reason)
+    headers += "Content-Type: application/json\r\n"
+    headers += "Connection: close\r\n"
+    if _session_id:
+        headers += "Mcp-Session-Id: {}\r\n".format(_session_id)
+    if extra_headers:
+        for k, v in extra_headers.items():
+            headers += "{}: {}\r\n".format(k, v)
+    body_bytes = body_str.encode("utf-8") if body_str else b""
+    headers += "Content-Length: {}\r\n".format(len(body_bytes))
+    headers += "\r\n"
+    return headers.encode("utf-8") + body_bytes
+
+
+# ---------------------------------------------------------------------------
+# QTcpServer subclass
+# ---------------------------------------------------------------------------
+
+class KlayoutClawServer(pya.QTcpServer):
+
+    def __init__(self, parent=None):
+        super(KlayoutClawServer, self).__init__(parent)
+        ha = pya.QHostAddress("127.0.0.1")
+        ok = self.listen(ha, 8765)
+        if not ok:
+            _log("ERROR: Failed to bind to 127.0.0.1:8765 — port may be in use")
+            return
+        _log("MCP server listening on 127.0.0.1:8765")
+        cb = sys.modules.get("_klayoutclaw")
+        if cb:
+            cb.server_port = 8765
+            if cb.on_server_start:
+                cb.on_server_start(8765)
+        self.newConnection(self.on_new_connection)
+
+    def on_new_connection(self):
+        try:
+            connection = self.nextPendingConnection()
+            self._handle_request(connection)
+        except Exception as ex:
+            _log("ERROR in on_new_connection: " + str(ex))
+
+    def _handle_request(self, conn):
+        try:
+            # --- Read HTTP request line and headers ---
+            method = None
+            path = None
+            content_length = 0
+            chunked = False
+            headers_done = False
+            session_header = None
+
+            while conn.isOpen() and conn.state() == pya.QTcpSocket.ConnectedState:
+                if conn.canReadLine():
+                    raw = conn.readLine()
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if line == "":
+                        headers_done = True
+                        break
+                    if method is None:
+                        # Request line: METHOD /path HTTP/1.x
+                        m = re.match(r"^(GET|POST|PUT|DELETE|OPTIONS)\s+(\S+)\s+HTTP/", line)
+                        if m:
+                            method = m.group(1)
+                            path = m.group(2)
+                    else:
+                        # Header line
+                        hm = re.match(r"^([^:]+):\s*(.*)", line)
+                        if hm:
+                            hname = hm.group(1).lower()
+                            hval = hm.group(2).strip()
+                            if hname == "content-length":
+                                try:
+                                    content_length = int(hval)
+                                except ValueError:
+                                    pass
+                            elif hname == "transfer-encoding" and "chunked" in hval.lower():
+                                chunked = True
+                            elif hname == "mcp-session-id":
+                                session_header = hval
+                else:
+                    conn.waitForReadyRead(100)
+
+            if method is None:
+                conn.write(_http_response(400, json.dumps({"error": "Bad Request"})))
+                self._close_connection(conn)
+                return
+
+            _log("HTTP {} {}".format(method, path))
+
+            # Validate session if present
+            if session_header and _session_id and session_header != _session_id:
+                _log("WARNING: Session ID mismatch (got {}, expected {})".format(session_header, _session_id))
+
+            # Reject chunked
+            if chunked:
+                conn.write(_http_response(400, json.dumps({"error": "Chunked transfer encoding not supported"})))
+                self._close_connection(conn)
+                return
+
+            # Enforce max body size
+            if content_length &gt; MAX_BODY_SIZE:
+                conn.write(_http_response(413, json.dumps({"error": "Payload too large (max 1MB)"})))
+                self._close_connection(conn)
+                return
+
+            # --- Read body for POST ---
+            body = b""
+            if method == "POST" and content_length &gt; 0:
+                while len(body) &lt; content_length:
+                    if conn.bytesAvailable() &gt; 0:
+                        chunk = conn.read(content_length - len(body))
+                        body += chunk.decode("utf-8", errors="replace").encode("utf-8") if isinstance(chunk, bytes) else chunk
+                    else:
+                        if not conn.waitForReadyRead(100):
+                            break
+                # pya socket read may return str or bytes depending on version
+                if isinstance(body, str):
+                    body = body.encode("utf-8")
+
+            # --- Route ---
+            if method == "GET" and path == "/mcp":
+                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.3"})
+                conn.write(_http_response(200, resp_body))
+
+            elif method == "POST" and path == "/mcp":
+                body_str = body.decode("utf-8") if isinstance(body, bytes) else body
+                rpc_resp, status = _handle_jsonrpc(body_str)
+                if rpc_resp is not None:
+                    conn.write(_http_response(status, json.dumps(rpc_resp)))
+                else:
+                    # Notification — return 200 with empty JSON
+                    conn.write(_http_response(200, ""))
+
+            else:
+                conn.write(_http_response(404, json.dumps({"error": "Not Found"})))
+
+        except Exception as ex:
+            _log("ERROR handling request: " + str(ex))
+            try:
+                conn.write(_http_response(500, json.dumps({"error": "Internal server error"})))
+            except Exception:
+                pass
+
+        self._close_connection(conn)
+
+    def _close_connection(self, conn):
+        """Disconnect and schedule cleanup via signal/slot as in KLayout template."""
+        try:
+            conn.disconnectFromHost()
+            signal = pya.qt_signal("disconnected()")
+            slot = pya.qt_slot("deleteLater()")
+            pya.QObject.connect(conn, signal, conn, slot)
+        except Exception as ex:
+            _log("ERROR closing connection: " + str(ex))
+
+
+# ---------------------------------------------------------------------------
+# Singleton startup
+# ---------------------------------------------------------------------------
+
+_server = None
+
+try:
+    with open(_early_log, "a") as _f:
+        _f.write("CREATING SERVER...\n")
+    _server = KlayoutClawServer()
+    with open(_early_log, "a") as _f:
+        _f.write("SERVER CREATED OK\n")
+except Exception as e:
+    import traceback
+    with open(_early_log, "a") as _f:
+        _f.write("FATAL: {}\n{}\n".format(e, traceback.format_exc()))
+    _log("FATAL: Failed to create server: " + str(e))
+</text>
+</klayout-macro>
