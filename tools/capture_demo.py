@@ -2,11 +2,14 @@
 """Capture step-by-step KLayout demo screenshots and combine into GIF.
 
 Steps:
-1. Create layout + cell
-2. Draw Hall bar mesa + probes
-3. Draw bonding pads + pin markers
-4. Run autorouter
-5. Final view with layer names
+1. Create new layout
+2. Create top cell
+3. Create layers (Mesa, Pads, Pin_A, Pin_B)
+4. Draw Hall bar mesa (channel + probes)
+5. Draw bonding pads
+6. Add pin markers
+7. Run autorouter
+8. Final view with routes
 
 Usage:
     python tools/capture_demo.py [output.gif]
@@ -100,20 +103,40 @@ def main():
     })
 
     # =====================================================================
-    # Frame 1: Create layout + cell
+    # Frame 1: Create new layout
     # =====================================================================
     print("\n=== Frame 1: Create Layout ===")
     tool_call("create_layout", name="HALLBAR_DEMO", dbu=0.001)
-    tool_call("execute_script", code="""
-# Add a title annotation
-result = {"status": "ok"}
-""")
-    frames.append(screenshot("01_create_layout"))
+    frames.append(screenshot("01_new_layout"))
 
     # =====================================================================
-    # Frame 2: Draw Hall bar mesa + probes
+    # Frame 2: Show cell created (HALLBAR_DEMO in cell panel)
     # =====================================================================
-    print("\n=== Frame 2: Draw Mesa ===")
+    print("\n=== Frame 2: Cell Created ===")
+    tool_call("execute_script", code="""
+result = {"cell": _top_cell.name, "dbu": _layout.dbu}
+""")
+    frames.append(screenshot("02_cell_created"))
+
+    # =====================================================================
+    # Frame 3: Create layers with readable names
+    # =====================================================================
+    print("\n=== Frame 3: Create Layers ===")
+    tool_call("execute_script", code="""
+# Pre-create all layers so they appear in the layer panel
+_layout.layer(1, 0)    # Mesa
+_layout.layer(3, 0)    # Pads
+_layout.layer(102, 0)  # Pin_A
+_layout.layer(111, 0)  # Pin_B
+result = {"status": "ok", "layers_created": ["1/0", "3/0", "102/0", "111/0"]}
+""")
+    set_layer_names()
+    frames.append(screenshot("03_layers"))
+
+    # =====================================================================
+    # Frame 4: Draw Hall bar mesa (channel + 6 probes)
+    # =====================================================================
+    print("\n=== Frame 4: Draw Mesa ===")
     tool_call("execute_script", code="""
 dbu = _layout.dbu
 cell = _top_cell
@@ -125,7 +148,7 @@ def rect(layer, dt, x1, y1, x2, y2):
 # Main channel: 100um x 25um
 rect(1, 0, -50, -12.5, 50, 12.5)
 
-# 6 side probes
+# 6 side probes (3 top, 3 bottom)
 probe_xs = [-30, 0, 30]
 for px in probe_xs:
     rect(1, 0, px - 5, 12.5, px + 5, 32.5)
@@ -134,12 +157,39 @@ for px in probe_xs:
 result = {"status": "ok", "step": "mesa drawn"}
 """)
     set_layer_names()
-    frames.append(screenshot("02_mesa"))
+    frames.append(screenshot("04_mesa"))
 
     # =====================================================================
-    # Frame 3: Draw bonding pads + pin markers
+    # Frame 5: Draw bonding pads
     # =====================================================================
-    print("\n=== Frame 3: Draw Pads + Pin Markers ===")
+    print("\n=== Frame 5: Draw Bonding Pads ===")
+    tool_call("execute_script", code="""
+dbu = _layout.dbu
+cell = _top_cell
+
+def rect(layer, dt, x1, y1, x2, y2):
+    li = _layout.layer(layer, dt)
+    cell.shapes(li).insert(pya.Box(int(x1/dbu), int(y1/dbu), int(x2/dbu), int(y2/dbu)))
+
+# 300x300um bonding pads on layer 3/0
+rect(3, 0, -1050, -150, -750, 150)    # left current pad
+rect(3, 0,  750,  -150, 1050, 150)    # right current pad
+rect(3, 0, -750, 700, -450, 1000)     # top-left voltage
+rect(3, 0, -150, 700,  150, 1000)     # top-center voltage
+rect(3, 0,  450, 700,  750, 1000)     # top-right voltage
+rect(3, 0, -750, -1000, -450, -700)   # bottom-left voltage
+rect(3, 0, -150, -1000,  150, -700)   # bottom-center voltage
+rect(3, 0,  450, -1000,  750, -700)   # bottom-right voltage
+
+result = {"status": "ok", "step": "pads drawn"}
+""")
+    set_layer_names()
+    frames.append(screenshot("05_pads"))
+
+    # =====================================================================
+    # Frame 6: Add pin markers
+    # =====================================================================
+    print("\n=== Frame 6: Add Pin Markers ===")
     tool_call("execute_script", code="""
 dbu = _layout.dbu
 cell = _top_cell
@@ -151,16 +201,6 @@ def rect(layer, dt, x1, y1, x2, y2):
 def pin(layer, dt, cx, cy, size=5):
     hs = size / 2.0
     rect(layer, dt, cx - hs, cy - hs, cx + hs, cy + hs)
-
-# 300x300um bonding pads on layer 3/0
-rect(3, 0, -1050, -150, -750, 150)
-rect(3, 0,  750,  -150, 1050, 150)
-rect(3, 0, -750, 700, -450, 1000)
-rect(3, 0, -150, 700,  150, 1000)
-rect(3, 0,  450, 700,  750, 1000)
-rect(3, 0, -750, -1000, -450, -700)
-rect(3, 0, -150, -1000,  150, -700)
-rect(3, 0,  450, -1000,  750, -700)
 
 # Pin A markers (probe tips + channel ends) on 102/0
 pin(102, 0, -30, 32.5)
@@ -182,15 +222,15 @@ pin(111, 0, -600, -850)
 pin(111, 0,    0, -850)
 pin(111, 0,  600, -850)
 
-result = {"status": "ok", "step": "pads + pins drawn"}
+result = {"status": "ok", "step": "pin markers added"}
 """)
     set_layer_names()
-    frames.append(screenshot("03_pads_pins"))
+    frames.append(screenshot("06_pins"))
 
     # =====================================================================
-    # Frame 4: Run autorouter
+    # Frame 7: Run autorouter
     # =====================================================================
-    print("\n=== Frame 4: Auto-Route ===")
+    print("\n=== Frame 7: Auto-Route ===")
     result = tool_call(
         "auto_route",
         timeout=180,
@@ -205,7 +245,7 @@ result = {"status": "ok", "step": "pads + pins drawn"}
     )
     print(f"  Route result: {json.dumps(result)}")
     set_layer_names()
-    frames.append(screenshot("04_routed"))
+    frames.append(screenshot("07_routed"))
 
     # =====================================================================
     # Combine into GIF
