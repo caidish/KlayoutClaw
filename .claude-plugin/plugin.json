@@ -1,0 +1,13 @@
+{
+  "name": "klayoutclaw",
+  "description": "Control KLayout from AI agents via MCP — geometry creation, layer display, and visual capture skills for chip/mask layout design",
+  "version": "0.5.2",
+  "author": {
+    "name": "caidish",
+    "email": "caidish1234@gmail.com"
+  },
+  "homepage": "https://github.com/caidish/KlayoutClaw",
+  "repository": "https://github.com/caidish/KlayoutClaw",
+  "license": "MIT",
+  "keywords": ["klayout", "gds", "layout", "mcp", "chip-design", "photolithography", "nanofabrication"]
+}

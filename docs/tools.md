@@ -1,10 +1,10 @@
-# KlayoutClaw MCP Tool Reference (v0.5)
+# KlayoutClaw MCP Tool Reference (v0.6)
 
 All tools are called via MCP `tools/call` method over HTTP POST to `http://127.0.0.1:8765/mcp`.
 
 All coordinates are in **microns**. The database unit (dbu) defaults to 0.001.
 
-**5 tools:** create_layout, execute_script, save_layout, get_layout_info, auto_route
+**6 tools:** create_layout, execute_script, save_layout, get_layout_info, screenshot, auto_route
 
 ---
 
@@ -115,6 +115,25 @@ Get summary information about the current layout. No parameters.
   "num_layers": 3
 }
 ```
+
+---
+
+## screenshot
+
+Capture the current KLayout viewport as a PNG image. Returns exactly what the user sees, including layer colors, zoom level, and visibility settings.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `filepath` | string | no | `/tmp/klayoutclaw_screenshot.png` | Output PNG file path |
+| `width` | integer | no | 1024 | Image width in pixels |
+| `height` | integer | no | 768 | Image height in pixels |
+
+**Returns:** `{"status": "ok", "filepath": "/tmp/klayoutclaw_screenshot.png", "width": 1024, "height": 768}`
+
+**Notes:**
+- Uses `pya.LayoutView.save_image()` — captures the actual viewport, not a re-render
+- Preserves current zoom, pan, layer visibility, and color settings
+- No external dependencies required
 
 ---
 

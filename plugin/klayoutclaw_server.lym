@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <klayout-macro>
  <description>KlayoutClaw MCP Server</description>
- <version>0.5</version>
+ <version>0.6</version>
  <category>pymacros</category>
  <prolog/>
  <epilog/>
@@ -22,7 +22,7 @@ import os
 # Early log to verify macro execution
 _early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
 with open(_early_log, "a") as _f:
-    _f.write("MACRO STARTED (v0.5 QTcpServer)\n")
+    _f.write("MACRO STARTED (v0.6 QTcpServer)\n")
 
 try:
     import pya
@@ -181,6 +181,18 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {}
+        }
+    },
+    {
+        "name": "screenshot",
+        "description": "Capture the current KLayout viewport as a PNG image. Returns exactly what the user sees, including layer colors, zoom level, and visibility settings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filepath": {"type": "string", "description": "Output PNG file path", "default": "/tmp/klayoutclaw_screenshot.png"},
+                "width": {"type": "integer", "description": "Image width in pixels", "default": 1024},
+                "height": {"type": "integer", "description": "Image height in pixels", "default": 768}
+            }
         }
     },
     {
@@ -358,6 +370,24 @@ def _tool_get_layout_info(args):
     return json.dumps({"status": "ok", "dbu": _layout.dbu, "num_cells": len(cells), "cells": cells, "num_layers": layer_count})
 
 
+def _tool_screenshot(args):
+    """Capture the current KLayout viewport as a PNG image."""
+    global _layout_view
+    if _layout_view is None:
+        _get_or_create_view()
+    if _layout_view is None:
+        raise ValueError("No layout view available to capture")
+
+    filepath = args.get("filepath", "/tmp/klayoutclaw_screenshot.png")
+    width = args.get("width", 1024)
+    height = args.get("height", 768)
+    abs_path = os.path.abspath(filepath)
+
+    _layout_view.save_image(abs_path, width, height)
+    _log("screenshot: saved {}x{} to {}".format(width, height, abs_path))
+    return json.dumps({"status": "ok", "filepath": abs_path, "width": width, "height": height})
+
+
 def _tool_auto_route(args):
     """Route connections between pin pairs using external route_worker.py."""
     import tempfile
@@ -516,6 +546,7 @@ _TOOL_DISPATCH = {
     "execute_script": _tool_execute_script,
     "save_layout": _tool_save_layout,
     "get_layout_info": _tool_get_layout_info,
+    "screenshot": _tool_screenshot,
     "auto_route": _tool_auto_route,
 }
 
@@ -559,7 +590,7 @@ def _handle_jsonrpc(body_str):
         result = {
             "protocolVersion": "2025-03-26",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "KlayoutClaw", "version": "0.5"}
+            "serverInfo": {"name": "KlayoutClaw", "version": "0.6"}
         }
         _notify_request(method, True)
         return {"jsonrpc": "2.0", "id": req_id, "result": result}, 200
@@ -761,7 +792,7 @@ class KlayoutClawServer(pya.QTcpServer):
 
             # --- Route ---
             if method == "GET" and path == "/mcp":
-                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.5"})
+                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.6"})
                 conn.write(_http_response(200, resp_body))
 
             elif method == "POST" and path == "/mcp":

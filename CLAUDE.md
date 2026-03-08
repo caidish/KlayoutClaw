@@ -7,11 +7,44 @@ MCP server plugin for KLayout GUI — enables AI tools to control KLayout via MC
 ```
 KlayoutClaw/
 ├── plugin/
-│   ├── klayoutclaw_server.lym    # KLayout autorun macro (MCP server, v0.5)
+│   ├── klayoutclaw_server.lym    # KLayout autorun macro (MCP server, v0.6)
 │   └── klayoutclaw_ui.lym        # KLayout autorun macro (UI panel + status bar)
 ├── tools/
 │   ├── gds_to_image.py           # GDS → PNG converter (gdstk + matplotlib)
 │   └── route_worker.py           # Subprocess routing engine (numpy/scipy/scikit-image)
+├── skills/
+│   ├── scripts/
+│   │   └── mcp_client.py            # Shared MCP client for all skills
+│   ├── geometry/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   │       ├── add_rect.py
+│   │       ├── add_polygon.py
+│   │       ├── add_path.py
+│   │       ├── create_cell.py
+│   │       └── add_instance.py
+│   ├── display/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   │       ├── toggle_layer.py
+│   │       └── show_only.py
+│   ├── image/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   │       ├── add_image.py
+│   │       ├── list_images.py
+│   │       └── remove_image.py
+│   ├── visual/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   │       └── capture.py
+│   └── nanodevice/
+│       └── routing/
+│           ├── SKILL.md
+│           └── scripts/
+│               ├── place_pads.py
+│               ├── route_multiwindow.py
+│               └── clear_routes.py
 ├── tests/
 │   ├── test_connection.py        # Protocol-level MCP connection test
 │   ├── test_connection.sh        # E2E connection test (install + launch + verify)
@@ -23,7 +56,7 @@ KlayoutClaw/
 │   └── test_autoroute.sh         # E2E autoroute test
 ├── docs/
 │   ├── tools.md                  # MCP tool reference (5 tools)
-│   ├── skills.md                 # Skills CLI reference (geometry, display, visual)
+│   ├── skills.md                 # Skills CLI reference (geometry, display, image, visual, nanodevice:routing)
 │   ├── ui-plugin.md              # UI plugin architecture + pya Qt pitfalls
 │   └── plans/                    # Architecture design docs
 │       ├── 2026-03-08-qtcpserver-mcp-design.md
@@ -31,12 +64,15 @@ KlayoutClaw/
 │       ├── 2026-03-08-ui-plugin-impl.md
 │       ├── 2026-03-08-autorouter-design.md
 │       └── 2026-03-08-autorouter-impl.md
+├── .claude-plugin/
+│   ├── plugin.json               # Claude Code plugin manifest
+│   └── marketplace.json          # Claude Code marketplace catalog
 ├── install.py                    # Copies plugins to ~/.klayout/pymacros/
 ├── mcp_config.json               # MCP client config for Claude Code
 └── TODO.md                       # Task tracking
 ```
 
-## MCP Tools (5 total)
+## MCP Tools (6 total)
 
 | Tool | Description |
 |------|-------------|
@@ -44,6 +80,7 @@ KlayoutClaw/
 | `execute_script` | Run arbitrary Python/pya code in KLayout |
 | `save_layout` | Save layout as GDS2 or OASIS |
 | `get_layout_info` | Layout summary info |
+| `screenshot` | Capture viewport as PNG (what the user sees) |
 | `auto_route` | Autoroute pin pairs (subprocess, needs conda env) |
 
 See `docs/tools.md` for full parameter schemas.

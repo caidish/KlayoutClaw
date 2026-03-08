@@ -46,8 +46,13 @@ python tests/test_connection.py
 | `execute_script` | Run arbitrary Python/pya code in KLayout |
 | `save_layout` | Save layout as GDS2 or OASIS |
 | `get_layout_info` | Get layout summary (cells, layers, dbu) |
+| `auto_route` | **(experimental)** Autoroute connections between pin pairs |
 
 `execute_script` is the power tool — it runs any Python code inside KLayout with access to `pya`, the current layout, and view. The other three handle lifecycle. See [docs/tools.md](docs/tools.md) for full parameter schemas.
+
+### Autorouter (experimental)
+
+`auto_route` automatically connects pin pairs using Hungarian matching and cost-based pathfinding. It runs as a subprocess with numpy/scipy/scikit-image, supporting obstacle avoidance and configurable path spacing. Still under active development — contributions welcome.
 
 ### Example: Create a rectangle via MCP
 
@@ -103,13 +108,51 @@ The UI plugin (`klayoutclaw_ui.lym`) adds a status indicator and command history
 
 See [docs/ui-plugin.md](docs/ui-plugin.md) for details.
 
+## Skills (Claude Code Plugin)
+
+KlayoutClaw is a Claude Code plugin marketplace. Install it to get skills that Claude can invoke automatically:
+
+```bash
+# Add the marketplace
+/plugin marketplace add caidish/KlayoutClaw
+
+# Install the plugin
+/plugin install klayoutclaw@klayoutclaw
+```
+
+Or test locally during development:
+
+```bash
+claude --plugin-dir ./path/to/KlayoutClaw
+```
+
+### Available Skills
+
+| Skill | Slash Command | Description |
+|-------|---------------|-------------|
+| `geometry` | `/klayoutclaw:geometry` | Create rectangles, polygons, paths, cells, and instances |
+| `display` | `/klayoutclaw:display` | Toggle layer visibility, show/hide layers |
+| `visual` | `/klayoutclaw:visual` | Capture layout as PNG for visual inspection |
+
+Claude also loads these skills automatically when relevant (e.g., "draw a rectangle" triggers the geometry skill).
+
+See [docs/skills.md](docs/skills.md) for full reference.
+
 ## Project Structure
 
 ```
 KlayoutClaw/
+├── .claude-plugin/
+│   ├── plugin.json               # Claude Code plugin manifest
+│   └── marketplace.json          # Claude Code marketplace catalog
 ├── plugin/
-│   ├── klayoutclaw_server.lym    # MCP server (v0.3)
+│   ├── klayoutclaw_server.lym    # MCP server (v0.5)
 │   └── klayoutclaw_ui.lym        # UI panel + status bar
+├── skills/                       # Claude Code skills (auto-loaded)
+│   ├── scripts/mcp_client.py     # Shared MCP client
+│   ├── geometry/                 # Shape creation skills
+│   ├── display/                  # Layer visibility skills
+│   └── visual/                   # Layout capture skill
 ├── tools/
 │   └── gds_to_image.py           # GDS → PNG converter
 ├── tests/
@@ -123,7 +166,7 @@ KlayoutClaw/
 │   ├── skills.md                 # Skills CLI reference
 │   ├── ui-plugin.md              # UI plugin docs
 │   └── plans/                    # Architecture design docs
-├── install.py                    # Plugin installer
+├── install.py                    # KLayout plugin installer
 └── mcp_config.json               # Claude Code MCP config
 ```
 

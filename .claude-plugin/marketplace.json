@@ -1,0 +1,19 @@
+{
+  "name": "klayoutclaw",
+  "owner": {
+    "name": "caidish",
+    "email": "caidish1234@gmail.com"
+  },
+  "metadata": {
+    "description": "KlayoutClaw — AI-powered KLayout control via MCP protocol"
+  },
+  "plugins": [
+    {
+      "name": "klayoutclaw",
+      "source": "./",
+      "description": "Control KLayout from AI agents via MCP — geometry creation, layer display, and visual capture skills",
+      "version": "0.5.2",
+      "keywords": ["klayout", "gds", "layout", "mcp", "chip-design"]
+    }
+  ]
+}

@@ -1,8 +1,20 @@
 # KlayoutClaw Skills Reference
 
-Skills are Claude Code plugins that wrap KlayoutClaw MCP tools into task-oriented CLIs. They are distributed as a plugin in the [cAI-tools](https://github.com/caidish/my-agent-prompt) marketplace at `plugins/klayoutclaw/`.
+Skills are Claude Code plugins that wrap KlayoutClaw MCP tools into task-oriented CLIs. They live in the `skills/` directory of this repository.
 
-All scripts share a common MCP client (`scripts/mcp_client.py`) that connects to KLayout at `127.0.0.1:8765`.
+## Installation
+
+```bash
+# Add KlayoutClaw as a Claude Code plugin marketplace
+/plugin marketplace add caidish/KlayoutClaw
+
+# Install the plugin
+/plugin install klayoutclaw@klayoutclaw
+```
+
+After installation, skills are available as `/klayoutclaw:geometry`, `/klayoutclaw:display`, `/klayoutclaw:image`, and `/klayoutclaw:visual`. Claude also loads them automatically when relevant.
+
+All scripts share a common MCP client (`skills/scripts/mcp_client.py`) that connects to KLayout at `127.0.0.1:8765`.
 
 ---
 
@@ -158,6 +170,65 @@ while not lp_iter.at_end():
     lp_iter.next()
 """)
 ```
+
+---
+
+## Image
+
+Load reference images (microscope photos, SEM, optical) as background overlays for design alignment.
+
+### add_image.py
+
+Load an image as a background overlay in KLayout.
+
+```bash
+python skills/image/scripts/add_image.py <filepath> [--pixel-size 0.1] [--scale-bar <um> <px>] [--x 0] [--y 0] [--center]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `filepath` | (required) | Path to image file (JPG, PNG, BMP) |
+| `--pixel-size` | `1.0` | Microns per pixel |
+| `--scale-bar` | — | Derive pixel size from scale bar: `<um> <pixels>` |
+| `--x` | `0` | X position offset in microns |
+| `--y` | `0` | Y position offset in microns |
+| `--center` | off | Center image at given position |
+
+```bash
+# Set pixel size directly
+python add_image.py ~/photos/graphene.jpg --pixel-size 0.1
+
+# Derive from scale bar: 20 um bar = 153 pixels → 0.1307 um/px
+python add_image.py ~/photos/graphene.jpg --scale-bar 20 153 --center
+
+# Center at (50, 25) um
+python add_image.py ~/photos/flake.png --pixel-size 0.05 --x 50 --y 25 --center
+```
+
+### list_images.py
+
+List all background images in the current view.
+
+```bash
+python skills/image/scripts/list_images.py
+```
+
+### remove_image.py
+
+Remove background image(s) by ID or remove all.
+
+```bash
+python skills/image/scripts/remove_image.py <image_id | all>
+```
+
+```bash
+python remove_image.py 12     # remove specific image
+python remove_image.py all    # remove all images
+```
+
+### Estimating pixel-size
+
+If the image has a scale bar of `S` microns spanning `P` pixels: `pixel-size = S / P`.
 
 ---
 
