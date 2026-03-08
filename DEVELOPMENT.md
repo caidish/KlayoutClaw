@@ -2,7 +2,7 @@
 
 ## Contributing
 
-We welcome contributions from the device physics community. If you're interested in joining our vibrant community building KlayoutClaw for device physicists, reach out to **jiaqi.cai@mit.edu**.
+We welcome contributions from the device physics community. If you're interested in joining our vibrant community building KlayoutClaw for device physicists, reach out to **caidish1234@gmail.com**.
 
 ## Setup
 

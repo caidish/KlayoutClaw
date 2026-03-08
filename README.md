@@ -1,8 +1,8 @@
 # KlayoutClaw
 
-MCP server plugin for KLayout — lets AI tools (Claude, Codex, etc.) control KLayout's layout engine via the [Model Context Protocol](https://modelcontextprotocol.io/).
+MCP server plugin for KLayout — connect your agent harness (Claude Code, Codex, Cline, or any MCP client) to your desktop KLayout. Design layouts in natural language and make batch edits across your GDS files, all through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
-Built for device physicists working on 2D material devices, superconducting qubits, photonics, and other micro/nanofabricated systems. Design your layouts by describing them in natural language — let the AI handle the geometry.
+Built for device physicists working on 2D material devices, superconducting qubits, photonics, and other micro/nanofabricated systems.
 
 > **macOS only** for now. Linux/Windows support is planned but untested.
 
@@ -152,7 +152,7 @@ bash tests/test_connection.sh
 
 ## Community
 
-Built for the device physics community. Interested in contributing? See [DEVELOPMENT.md](DEVELOPMENT.md) or contact **jiaqi.cai@mit.edu**.
+Built for the device physics community. Interested in contributing? See [DEVELOPMENT.md](DEVELOPMENT.md) or contact **caidish1234@gmail.com**.
 
 ## License
 
