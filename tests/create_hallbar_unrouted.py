@@ -93,21 +93,21 @@ for px in probe_xs:
     rect(1, 0, px - 5, -32.5, px + 5, -12.5)   # bottom probes
 
 # =========================================================================
-# Layer 3/0: Bonding pads - obstacles
+# Layer 3/0: Bonding pads - obstacles (300x300um pads)
 # =========================================================================
 # Current pads (left and right)
-rect(3, 0, -950, -50, -850, 50)    # left current pad
-rect(3, 0,  850, -50,  950, 50)    # right current pad
+rect(3, 0, -1050, -150, -750, 150)   # left current pad
+rect(3, 0,  750,  -150, 1050, 150)   # right current pad
 
-# Voltage pads - top row (3 pads at y = 800..900)
-rect(3, 0, -650, 800, -550, 900)   # top-left voltage
-rect(3, 0,  -50, 800,   50, 900)   # top-center voltage
-rect(3, 0,  550, 800,  650, 900)   # top-right voltage
+# Voltage pads - top row (3 pads, centers at y = 850)
+rect(3, 0, -750, 700, -450, 1000)    # top-left voltage
+rect(3, 0, -150, 700,  150, 1000)    # top-center voltage
+rect(3, 0,  450, 700,  750, 1000)    # top-right voltage
 
-# Voltage pads - bottom row (3 pads at y = -900..-800)
-rect(3, 0, -650, -900, -550, -800)  # bottom-left voltage
-rect(3, 0,  -50, -900,   50, -800)  # bottom-center voltage
-rect(3, 0,  550, -900,  650, -800)  # bottom-right voltage
+# Voltage pads - bottom row (3 pads, centers at y = -850)
+rect(3, 0, -750, -1000, -450, -700)  # bottom-left voltage
+rect(3, 0, -150, -1000,  150, -700)  # bottom-center voltage
+rect(3, 0,  450, -1000,  750, -700)  # bottom-right voltage
 
 # =========================================================================
 # Layer 102/0: Pin_A - pin markers at probe tips and channel ends
@@ -143,7 +143,7 @@ pin_marker(111, 0, -600, -850)
 pin_marker(111, 0,    0, -850)
 pin_marker(111, 0,  600, -850)
 
-result = {"status": "ok", "message": "Unrouted Hall bar with pin markers created (~1900x1800um)"}
+result = {"status": "ok", "message": "Unrouted Hall bar with 300x300um pads and pin markers (~2100x2000um)"}
 """)
 
     # Save
