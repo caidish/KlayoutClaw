@@ -1,5 +1,18 @@
 # KlayoutClaw TODO
 
+## v0.5: Autorouter
+- [x] Install routing deps (scikit-image, klayout standalone) in conda env
+- [x] Create `tools/route_worker.py` — subprocess routing engine (numpy/scipy/scikit-image)
+- [x] Create `tests/create_hallbar_unrouted.py` — Hall bar with pin markers, no traces
+- [x] Add `auto_route` MCP tool to server plugin (subprocess-based)
+- [x] Create `tests/evaluate_routing.py` — structural validation of routed GDS
+- [x] Create `tests/test_autoroute.sh` — E2E autoroute test script
+- [x] Fix field name mismatches between MCP handler and route_worker.py
+- [x] Update docs (tools.md, CLAUDE.md, TODO.md)
+- [ ] Verify: `python install.py` + restart KLayout
+- [ ] Verify: `bash tests/test_autoroute.sh` — PASS
+- [ ] Verify: visual check of routed PNG screenshot
+
 ## v0.4: UI Plugin
 - [x] Add UI callback slots to server macro (sys.modules shared state)
 - [x] Create klayoutclaw_ui.lym — dock panel + status bar indicator

@@ -1,8 +1,10 @@
-# KlayoutClaw MCP Tool Reference
+# KlayoutClaw MCP Tool Reference (v0.5)
 
 All tools are called via MCP `tools/call` method over HTTP POST to `http://127.0.0.1:8765/mcp`.
 
 All coordinates are in **microns**. The database unit (dbu) defaults to 0.001.
+
+**5 tools:** create_layout, execute_script, save_layout, get_layout_info, auto_route
 
 ---
 
@@ -113,3 +115,48 @@ Get summary information about the current layout. No parameters.
   "num_layers": 3
 }
 ```
+
+---
+
+## auto_route
+
+Automatically route connections between pin pairs using cost-based pathfinding. Extracts pins from two layers, uses Hungarian matching for optimal pairing, then minimum-cost pathfinding (Dijkstra on a raster grid) to create routes avoiding obstacles.
+
+Runs routing computation in a subprocess (`tools/route_worker.py`) using numpy, scipy, and scikit-image. Requires these packages in a conda environment (default: `instrMCPdev`).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `pin_layer_a` | string | yes | | Layer with start pins (e.g. "102/0") |
+| `pin_layer_b` | string | yes | | Layer with end pins (e.g. "111/0") |
+| `obstacle_layers` | string[] | no | [] | Layers to avoid (e.g. ["1/0", "3/0"]) |
+| `output_layer` | string | no | "10/0" | Layer for routed paths |
+| `path_width` | number | no | 10.0 | Path width in microns |
+| `obs_safe_distance` | number | no | 5.0 | Min distance from obstacles (um) |
+| `path_safe_distance` | number | no | 5.0 | Min distance between paths (um) |
+| `map_resolution` | number | no | 2.0 | Grid resolution in microns |
+| `conda_env` | string | no | "instrMCPdev" | Conda env with routing deps |
+| `python_path` | string | no | | Path to python binary (overrides conda_env) |
+
+**Returns:**
+```json
+{
+  "status": "success",
+  "routed_pairs": 8,
+  "total_pins_a": 8,
+  "total_pins_b": 8,
+  "output_layer": "10/0",
+  "path_width_um": 10.0,
+  "errors": []
+}
+```
+
+**Algorithm:**
+1. Save current layout to temp GDS
+2. Extract pin centers from shapes on pin_layer_a and pin_layer_b
+3. Build obstacle region from obstacle_layers, expanded by obs_safe_distance
+4. Rasterize obstacles into a 2D cost grid (resolution = map_resolution)
+5. Hungarian matching (scipy) finds optimal pin pairings
+6. MCP_Geometric (scikit-image) finds minimum-cost paths on the grid
+7. Paths compressed (collinear points removed) and inserted as pya.Path objects
+
+**Dependencies (subprocess):** numpy, scipy, scikit-image, klayout (standalone package)
