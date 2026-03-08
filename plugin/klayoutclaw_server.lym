@@ -36,6 +36,7 @@ import json
 import re
 import uuid
 import datetime
+import traceback as _tb_mod
 
 with open(_early_log, "a") as _f:
     _f.write("ALL IMPORTS OK\n")
@@ -298,7 +299,20 @@ def _tool_execute_script(args):
         "_get_or_create_view": _get_or_create_view,
         "_refresh_view": _refresh_view,
     }
-    exec(code, ns)
+    try:
+        exec(code, ns)
+    except Exception as e:
+        # Format a readable error with traceback pointing to user code lines
+        tb_lines = _tb_mod.format_exception(type(e), e, e.__traceback__)
+        # Filter to show only the &lt;string&gt; (user code) frames
+        user_frames = []
+        for line in _tb_mod.format_tb(e.__traceback__):
+            if '&lt;string&gt;' in line:
+                user_frames.append(line.strip())
+        err_msg = "{}: {}".format(type(e).__name__, e)
+        if user_frames:
+            err_msg += "\n  in user code:\n    " + "\n    ".join(user_frames)
+        raise RuntimeError(err_msg)
     # Update globals in case script called _get_or_create_view()
     if ns.get("_layout") is not _layout:
         _layout = ns["_layout"]
@@ -356,7 +370,7 @@ def _tool_auto_route(args):
     pin_layer_a = args.get("pin_layer_a")
     pin_layer_b = args.get("pin_layer_b")
     if not pin_layer_a or not pin_layer_b:
-        raise ValueError("Missing required parameters: pin_layer_a and pin_layer_b")
+        raise ValueError("Missing required parameters: pin_layer_a and pin_layer_b. Both must be layer specs like '102/0'.")
 
     obstacle_layers = args.get("obstacle_layers", [])
     output_layer = args.get("output_layer", "10/0")
@@ -412,7 +426,7 @@ def _tool_auto_route(args):
             worker_path = wp
             break
     if worker_path is None:
-        raise ValueError("route_worker.py not found. Searched: " + ", ".join(worker_candidates))
+        raise ValueError("route_worker.py not found. Install the plugin with 'python install.py' or place route_worker.py in one of: " + ", ".join(worker_candidates))
     _log("auto_route: using worker {}".format(worker_path))
 
     # Spawn subprocess
@@ -428,16 +442,23 @@ def _tool_auto_route(args):
             ["bash", "-c", cmd],
             capture_output=True, text=True, timeout=120
         )
+    except subprocess.TimeoutExpired:
+        raise ValueError("Routing timed out after 120 seconds. The layout may be too complex — try increasing map_resolution or reducing the number of obstacles.")
     except Exception as e:
-        raise ValueError("Subprocess failed: {}".format(e))
+        raise ValueError("Failed to run route_worker.py subprocess: {}".format(e))
 
     if proc.returncode != 0:
         _log("auto_route stderr: {}".format(proc.stderr))
-        raise ValueError("route_worker.py failed (exit {}): {}".format(proc.returncode, proc.stderr[:500]))
+        stderr = proc.stderr.strip()
+        # Try to extract the last meaningful error line
+        err_lines = [l for l in stderr.split("\n") if l.strip()]
+        last_err = err_lines[-1] if err_lines else "unknown error"
+        raise ValueError("Routing subprocess failed (exit code {}): {}\nFull stderr:\n{}".format(
+            proc.returncode, last_err, stderr[:500]))
 
     # Read output
     if not os.path.isfile(output_json):
-        raise ValueError("route_worker.py did not produce output. stdout: {} stderr: {}".format(
+        raise ValueError("route_worker.py ran but produced no output file. This usually means it crashed before writing results.\nstdout: {}\nstderr: {}".format(
             proc.stdout[:300], proc.stderr[:300]))
 
     with open(output_json, "r") as f:
@@ -505,9 +526,19 @@ _TOOL_DISPATCH = {
 
 MAX_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
 
+# Guard against re-entrant / parallel tool calls.
+# QTcpServer runs on the Qt main thread. If waitForReadyRead() processes
+# events during a long-running tool, a second newConnection signal can
+# fire and try to execute another tool concurrently — corrupting shared
+# layout state. We track whether a tool is running and return an
+# immediate retry-friendly error to the second caller.
+_tool_busy = False
+_tool_busy_name = None
+
 
 def _handle_jsonrpc(body_str):
     """Parse a JSON-RPC 2.0 request and return (response_dict_or_None, http_status)."""
+    global _tool_busy, _tool_busy_name
     try:
         req = json.loads(body_str)
     except (json.JSONDecodeError, ValueError) as e:
@@ -550,18 +581,52 @@ def _handle_jsonrpc(body_str):
         tool_args = params.get("arguments", {})
         handler = _TOOL_DISPATCH.get(tool_name)
         if handler is None:
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Tool not found: {}".format(tool_name)}}, 200
+            err_msg = "Tool '{}' not found. Available tools: {}".format(
+                tool_name, ", ".join(sorted(_TOOL_DISPATCH.keys())))
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": err_msg}], "isError": True}}, 200
+
+        # Reject parallel tool calls — the server is single-threaded
+        if _tool_busy:
+            err_msg = (
+                "Server busy: '{}' is currently running. "
+                "KLayout MCP server is single-threaded and cannot handle parallel tool calls. "
+                "Please wait for it to finish, then retry '{}'. "
+                "Hint: call tools sequentially, not in parallel."
+            ).format(_tool_busy_name, tool_name)
+            _log("BUSY: rejected '{}' while '{}' is running".format(tool_name, _tool_busy_name))
+            _notify_request("tools/call:" + tool_name, False, "server busy")
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": err_msg}], "isError": True}}, 200
+
+        _tool_busy = True
+        _tool_busy_name = tool_name
         try:
             result_str = handler(tool_args)
             _notify_request("tools/call:" + tool_name, True)
             return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": result_str}]}}, 200
-        except ValueError as e:
-            _notify_request("tools/call:" + tool_name, False, str(e))
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": str(e)}}, 200
         except Exception as e:
-            _log("Tool error: {} — {}".format(tool_name, e))
+            # Return tool errors as MCP results with isError=true so
+            # the client can display them as readable tool output
+            tb_str = _tb_mod.format_exc()
+            _log("Tool error: {} — {}\n{}".format(tool_name, e, tb_str))
             _notify_request("tools/call:" + tool_name, False, str(e))
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": "Internal error: " + str(e)}}, 200
+            # Build a human-readable error message
+            err_parts = ["Tool '{}' failed: {}".format(tool_name, e)]
+            # For execute_script, the RuntimeError already has user-code context
+            # For other tools, add a short traceback hint
+            if tool_name != "execute_script":
+                # Include the last few relevant traceback lines
+                tb_lines = tb_str.strip().split("\n")
+                if len(tb_lines) &gt; 2:
+                    err_parts.append("Traceback (last 3 lines):")
+                    for tl in tb_lines[-3:]:
+                        err_parts.append("  " + tl)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": "\n".join(err_parts)}], "isError": True}}, 200
+        finally:
+            _tool_busy = False
+            _tool_busy_name = None
 
     # --- unknown method ---
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found: {}".format(method)}}, 200

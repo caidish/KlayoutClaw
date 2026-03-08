@@ -1,5 +1,12 @@
 # KlayoutClaw TODO
 
+## v0.5.1: Error Handling &amp; Parallel Call Guard
+- [x] Return tool errors as MCP results with `isError: true` (not JSON-RPC errors)
+- [x] Add busy guard to reject parallel tool calls with clear retry message
+- [x] Improve `execute_script` errors: show exception type, message, and user code line numbers
+- [x] Improve `auto_route` errors: timeout hint, last error line extraction, actionable messages
+- [x] Improve `tool not found` error: list available tools
+
 ## v0.5: Autorouter
 - [x] Install routing deps (scikit-image, klayout standalone) in conda env
 - [x] Create `tools/route_worker.py` — subprocess routing engine (numpy/scipy/scikit-image)
