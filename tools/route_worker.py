@@ -101,9 +101,12 @@ def rasterize_region(region: kdb.Region, bbox: kdb.Box,
                      resolution_dbu: int) -> np.ndarray:
     """Rasterize a kdb.Region into a 2D boolean numpy array.
 
-    Each grid cell is True if the region contains the cell center.
+    Each grid cell is True if any region polygon contains the cell center.
     Grid axes: row = y (bottom-to-top mapped to 0..nrows-1), col = x.
+    Uses matplotlib.path.Path.contains_points for vectorized point-in-polygon.
     """
+    from matplotlib.path import Path as MplPath
+
     x_min, y_min = bbox.left, bbox.bottom
     x_max, y_max = bbox.right, bbox.top
 
@@ -112,13 +115,25 @@ def rasterize_region(region: kdb.Region, bbox: kdb.Box,
 
     grid = np.zeros((nrows, ncols), dtype=bool)
 
-    # Per-pixel contains check — acceptable for coarse grids
-    for r in range(nrows):
-        y = y_min + r * resolution_dbu + resolution_dbu // 2
-        for c in range(ncols):
-            x = x_min + c * resolution_dbu + resolution_dbu // 2
-            if region.is_inside(kdb.Point(x, y)):
-                grid[r, c] = True
+    # Build grid of all point coordinates
+    cols = np.arange(ncols)
+    rows = np.arange(nrows)
+    cc, rr = np.meshgrid(cols, rows)
+    xs = x_min + cc * resolution_dbu + resolution_dbu // 2
+    ys = y_min + rr * resolution_dbu + resolution_dbu // 2
+    points = np.column_stack([xs.ravel(), ys.ravel()])
+
+    # For each polygon in the merged region, mark contained grid cells
+    for polygon in region.each_merged():
+        hull = polygon.to_simple_polygon()
+        n = hull.num_points()
+        if n < 3:
+            continue
+        verts = [(hull.point(i).x, hull.point(i).y) for i in range(n)]
+        verts.append(verts[0])  # close polygon
+        path = MplPath(verts)
+        inside = path.contains_points(points)
+        grid |= inside.reshape(nrows, ncols)
 
     return grid
 
@@ -295,8 +310,41 @@ def route(config: dict) -> dict:
                 "paths": [],
                 "errors": ["No pins found on one or both layers"]}
 
-    # Build obstacle region
+    # Build obstacle region, then subtract pin areas so paths can reach pins.
+    # Pins often sit on obstacle shapes (probes/pads). We subtract a corridor
+    # around each pin from the obstacle region before rasterizing.
     obs_region = build_obstacle_region(cell, layout, obstacle_layers, obs_safe_dbu)
+
+    # Create pin exclusion regions — one corridor per pin connecting it to free space.
+    # Use the obstacle bounding box of shapes containing each pin to determine
+    # the needed clearance radius, then subtract circles from the obstacle region.
+    raw_obs_region = build_obstacle_region(cell, layout, obstacle_layers, 0)
+    pin_exclusion = kdb.Region()
+    for pin_list in [pins_a, pins_b]:
+        for px, py in pin_list:
+            # Find the size of the obstacle containing this pin
+            pt_box = kdb.Box(px - 1, py - 1, px + 1, py + 1)
+            pt_region = kdb.Region(pt_box)
+            touching = raw_obs_region.interacting(pt_region)
+            if touching.is_empty():
+                # Pin not on an obstacle — small clearance is enough
+                clear_radius = obs_safe_dbu + resolution_dbu * 2
+            else:
+                # Pin is on an obstacle — clearance must reach past expanded edge
+                obs_bbox = touching.bbox()
+                # Max distance from pin to any edge of the expanded obstacle
+                dx = max(abs(px - obs_bbox.left), abs(px - obs_bbox.right))
+                dy = max(abs(py - obs_bbox.bottom), abs(py - obs_bbox.top))
+                max_dist = int(math.sqrt(dx * dx + dy * dy))
+                clear_radius = max_dist + obs_safe_dbu + resolution_dbu * 2
+            # Create a box approximating a circle
+            pin_exclusion.insert(kdb.Box(
+                px - clear_radius, py - clear_radius,
+                px + clear_radius, py + clear_radius,
+            ))
+
+    # Subtract pin exclusion zones from obstacle region
+    obs_region = obs_region - pin_exclusion
 
     # Compute bounding box (cell bbox with margin)
     cell_bbox = cell.bbox()

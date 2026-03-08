@@ -85,23 +85,8 @@ if not session_id:
 print(f'  Session ID: {session_id}')
 mcp_notify('notifications/initialized', session_id)
 
-# Load unrouted GDS into KLayout via execute_script
-print('  Loading unrouted GDS into KLayout...')
-load_script = '''
-import pya
-app = pya.Application.instance()
-mw = app.main_window()
-mw.load_layout(\"$GDS_UNROUTED\", 0)
-print(\"Layout loaded\")
-'''
-r, data = mcp_request('tools/call', {
-    'name': 'execute_script',
-    'arguments': {'code': load_script},
-}, req_id=2, session_id=session_id, timeout=30)
-if 'error' in data:
-    print(f'  ERROR loading GDS: {data[\"error\"]}')
-    sys.exit(1)
-print('  Layout loaded into KLayout.')
+# Layout is already loaded in KLayout from create_hallbar_unrouted.py above.
+# No need to reload — just call auto_route on the current layout.
 
 # Call auto_route
 print('  Calling auto_route (this may take a while)...')
