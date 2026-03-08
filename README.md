@@ -2,7 +2,11 @@
 
 MCP server plugin for KLayout — lets AI tools (Claude, Codex, etc.) control KLayout's layout engine via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
+Built for device physicists working on 2D material devices, superconducting qubits, photonics, and other micro/nanofabricated systems. Design your layouts by describing them in natural language — let the AI handle the geometry.
+
 > **macOS only** for now. Linux/Windows support is planned but untested.
+
+![Demo](docs/demo.gif)
 
 ## How It Works
 
@@ -145,6 +149,10 @@ python tests/evaluate_gds.py /tmp/hallbar.gds
 # Full E2E (installs plugin, launches KLayout, tests connection)
 bash tests/test_connection.sh
 ```
+
+## Community
+
+Built for the device physics community. Interested in contributing? See [DEVELOPMENT.md](DEVELOPMENT.md) or contact **jiaqi.cai@mit.edu**.
 
 ## License
 
