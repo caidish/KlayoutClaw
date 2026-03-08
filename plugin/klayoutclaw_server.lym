@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <klayout-macro>
  <description>KlayoutClaw MCP Server</description>
- <version>0.3</version>
+ <version>0.5</version>
  <category>pymacros</category>
  <prolog/>
  <epilog/>
@@ -22,7 +22,7 @@ import os
 # Early log to verify macro execution
 _early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
 with open(_early_log, "a") as _f:
-    _f.write("MACRO STARTED (v0.3 QTcpServer)\n")
+    _f.write("MACRO STARTED (v0.5 QTcpServer)\n")
 
 try:
     import pya
@@ -181,6 +181,26 @@ TOOLS = [
             "type": "object",
             "properties": {}
         }
+    },
+    {
+        "name": "auto_route",
+        "description": "Automatically route connections between pin pairs. Uses Hungarian matching + cost-based pathfinding. Requires numpy/scipy/scikit-image in conda env.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pin_layer_a": {"type": "string", "description": "Layer with start pins (e.g. '102/0')"},
+                "pin_layer_b": {"type": "string", "description": "Layer with end pins (e.g. '111/0')"},
+                "obstacle_layers": {"type": "array", "items": {"type": "string"}, "description": "Layers to avoid", "default": []},
+                "output_layer": {"type": "string", "description": "Layer for routed paths", "default": "10/0"},
+                "path_width": {"type": "number", "description": "Path width in microns", "default": 10.0},
+                "obs_safe_distance": {"type": "number", "description": "Min distance from obstacles in microns", "default": 5.0},
+                "path_safe_distance": {"type": "number", "description": "Min distance between paths in microns", "default": 5.0},
+                "map_resolution": {"type": "number", "description": "Grid resolution in microns", "default": 2.0},
+                "conda_env": {"type": "string", "description": "Conda env with routing deps", "default": "instrMCPdev"},
+                "python_path": {"type": "string", "description": "Path to python with routing deps (overrides conda_env)"}
+            },
+            "required": ["pin_layer_a", "pin_layer_b"]
+        }
     }
 ]
 
@@ -324,11 +344,155 @@ def _tool_get_layout_info(args):
     return json.dumps({"status": "ok", "dbu": _layout.dbu, "num_cells": len(cells), "cells": cells, "num_layers": layer_count})
 
 
+def _tool_auto_route(args):
+    """Route connections between pin pairs using external route_worker.py."""
+    import tempfile
+    import subprocess
+
+    global _layout, _layout_view, _top_cell
+    if _layout is None:
+        _get_or_create_view()
+
+    pin_layer_a = args.get("pin_layer_a")
+    pin_layer_b = args.get("pin_layer_b")
+    if not pin_layer_a or not pin_layer_b:
+        raise ValueError("Missing required parameters: pin_layer_a and pin_layer_b")
+
+    obstacle_layers = args.get("obstacle_layers", [])
+    output_layer = args.get("output_layer", "10/0")
+    path_width = args.get("path_width", 10.0)
+    obs_safe_distance = args.get("obs_safe_distance", 5.0)
+    path_safe_distance = args.get("path_safe_distance", 5.0)
+    map_resolution = args.get("map_resolution", 2.0)
+    conda_env = args.get("conda_env", "instrMCPdev")
+    python_path = args.get("python_path", None)
+
+    # Save current layout to temp GDS
+    tmp_dir = tempfile.mkdtemp(prefix="klayoutclaw_route_")
+    input_gds = os.path.join(tmp_dir, "input.gds")
+    config_json = os.path.join(tmp_dir, "config.json")
+    output_json = os.path.join(tmp_dir, "output.json")
+
+    save_opts = pya.SaveLayoutOptions()
+    save_opts.format = "GDS2"
+    _layout.write(input_gds, save_opts)
+    _log("auto_route: saved layout to {}".format(input_gds))
+
+    # Write config JSON
+    config = {
+        "input_gds": input_gds,
+        "output_json": output_json,
+        "pin_layer_a": pin_layer_a,
+        "pin_layer_b": pin_layer_b,
+        "obstacle_layers": obstacle_layers,
+        "output_layer": output_layer,
+        "path_width": path_width,
+        "obs_safe_distance": obs_safe_distance,
+        "path_safe_distance": path_safe_distance,
+        "map_resolution": map_resolution,
+        "dbu": _layout.dbu,
+    }
+    with open(config_json, "w") as f:
+        json.dump(config, f)
+
+    # Find route_worker.py
+    worker_candidates = [
+        os.path.expanduser("~/Documents/GitHub/KlayoutClaw/tools/route_worker.py"),
+        os.path.expanduser("~/.klayout/pymacros/route_worker.py"),
+    ]
+    # Also check directory of __file__ if available
+    try:
+        worker_candidates.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "route_worker.py"))
+    except Exception:
+        pass
+    worker_path = None
+    for wp in worker_candidates:
+        if os.path.isfile(wp):
+            worker_path = wp
+            break
+    if worker_path is None:
+        raise ValueError("route_worker.py not found. Searched: " + ", ".join(worker_candidates))
+    _log("auto_route: using worker {}".format(worker_path))
+
+    # Spawn subprocess
+    if python_path:
+        cmd = "{} {} {}".format(python_path, worker_path, config_json)
+    else:
+        cmd = 'source ~/miniforge3/etc/profile.d/conda.sh &amp;&amp; conda activate {} &amp;&amp; python {} {}'.format(
+            conda_env, worker_path, config_json
+        )
+    _log("auto_route: running: {}".format(cmd))
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True, text=True, timeout=120
+        )
+    except Exception as e:
+        raise ValueError("Subprocess failed: {}".format(e))
+
+    if proc.returncode != 0:
+        _log("auto_route stderr: {}".format(proc.stderr))
+        raise ValueError("route_worker.py failed (exit {}): {}".format(proc.returncode, proc.stderr[:500]))
+
+    # Read output
+    if not os.path.isfile(output_json):
+        raise ValueError("route_worker.py did not produce output. stdout: {} stderr: {}".format(
+            proc.stdout[:300], proc.stderr[:300]))
+
+    with open(output_json, "r") as f:
+        result = json.load(f)
+
+    if result.get("status") != "ok":
+        raise ValueError("Routing failed: {}".format(result.get("error", "unknown")))
+
+    # Insert routed paths into layout
+    ol_parts = output_layer.split("/")
+    ol_num = int(ol_parts[0])
+    ol_dt = int(ol_parts[1]) if len(ol_parts) &gt; 1 else 0
+    layer_idx = _layout.layer(ol_num, ol_dt)
+    dbu = _layout.dbu
+    path_width_dbu = int(round(path_width / dbu))
+
+    routes = result.get("routes", [])
+    inserted = 0
+    for route in routes:
+        pts = route.get("points_dbu", [])
+        if len(pts) &lt; 2:
+            continue
+        path_obj = pya.Path(
+            [pya.Point(int(p[0]), int(p[1])) for p in pts],
+            path_width_dbu
+        )
+        _top_cell.shapes(layer_idx).insert(path_obj)
+        inserted += 1
+
+    _refresh_view()
+    _log("auto_route: inserted {} paths".format(inserted))
+
+    # Cleanup temp files
+    try:
+        os.remove(input_gds)
+        os.remove(config_json)
+        os.remove(output_json)
+        os.rmdir(tmp_dir)
+    except Exception:
+        pass
+
+    return json.dumps({
+        "status": "ok",
+        "routes_inserted": inserted,
+        "total_routes": len(routes),
+        "output_layer": output_layer,
+        "path_width_um": path_width,
+    })
+
+
 _TOOL_DISPATCH = {
     "create_layout": _tool_create_layout,
     "execute_script": _tool_execute_script,
     "save_layout": _tool_save_layout,
     "get_layout_info": _tool_get_layout_info,
+    "auto_route": _tool_auto_route,
 }
 
 
@@ -361,7 +525,7 @@ def _handle_jsonrpc(body_str):
         result = {
             "protocolVersion": "2025-03-26",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "KlayoutClaw", "version": "0.3"}
+            "serverInfo": {"name": "KlayoutClaw", "version": "0.5"}
         }
         _notify_request(method, True)
         return {"jsonrpc": "2.0", "id": req_id, "result": result}, 200
@@ -529,7 +693,7 @@ class KlayoutClawServer(pya.QTcpServer):
 
             # --- Route ---
             if method == "GET" and path == "/mcp":
-                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.3"})
+                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.5"})
                 conn.write(_http_response(200, resp_body))
 
             elif method == "POST" and path == "/mcp":
