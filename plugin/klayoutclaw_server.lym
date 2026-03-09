@@ -782,13 +782,13 @@ class KlayoutClawServer(pya.QTcpServer):
                 while len(body) &lt; content_length:
                     if conn.bytesAvailable() &gt; 0:
                         chunk = conn.read(content_length - len(body))
-                        body += chunk.decode("utf-8", errors="replace").encode("utf-8") if isinstance(chunk, bytes) else chunk
+                        if isinstance(chunk, bytes):
+                            body += chunk
+                        else:
+                            body += chunk.encode("utf-8")
                     else:
                         if not conn.waitForReadyRead(100):
                             break
-                # pya socket read may return str or bytes depending on version
-                if isinstance(body, str):
-                    body = body.encode("utf-8")
 
             # --- Route ---
             if method == "GET" and path == "/mcp":
