@@ -275,6 +275,45 @@ Install: `conda install gdstk matplotlib` (or `pip install gdstk matplotlib`)
 
 ---
 
+## Flake Detection (nanodevice:flakedetect)
+
+Agent-orchestrated pipeline for detecting van der Waals heterostructure material boundaries from optical microscope images. Detects hBN, graphene, and graphite from multi-source images and commits polygons to KLayout.
+
+### Architecture
+
+Split into 5 sub-skills, each executed by a subagent:
+
+| Sub-skill | Purpose | Scripts |
+|-----------|---------|---------|
+| `align` | Register source images to full_stack coords | sift_align, source_contour, footprint, sweep, refine |
+| `detect` | Per-material segmentation | graphite, graphene, bottom_hbn, top_hbn |
+| `combine` | Coordinate transforms + overlays | ecc_register, transform, overlay |
+| `commit` | Insert polygons into KLayout | (pure agent workflow, uses geometry skill) |
+| `review` | Visual validation protocol | (pure agent workflow, uses display skill) |
+
+### Pipeline
+
+```
+1. align → 2. detect → 3. combine → 4. commit → 5. review
+```
+
+Each step runs as a subagent that reads its SKILL.md from `skills/nanodevice/flakedetect/<step>/SKILL.md`.
+
+### Dependencies
+
+- `opencv-python-headless` — image processing, contour extraction
+- `numpy` — array operations
+- `scipy` — KDTree, optimization (Chamfer alignment)
+- `scikit-learn` — k-means clustering
+
+Conda env: `base` (all deps pre-installed)
+
+### Full Documentation
+
+See `skills/nanodevice/flakedetect/SKILL.md` for the orchestrator workflow, and each sub-skill's SKILL.md for detailed script references and tuning guides.
+
+---
+
 ## Tests
 
 ### test_visual.py

@@ -39,6 +39,23 @@ KlayoutClaw/
 │   │   └── scripts/
 │   │       └── capture.py
 │   └── nanodevice/
+│       ├── flakedetect/
+│       │   ├── SKILL.md              # Orchestrator (dispatches subagents)
+│       │   ├── scripts/
+│       │   │   └── core.py           # Shared CV utilities (morph, contour, Chamfer)
+│       │   ├── align/                # SIFT + Chamfer cross-substrate alignment
+│       │   │   ├── SKILL.md
+│       │   │   └── scripts/          # sift_align, source_contour, footprint, sweep, refine
+│       │   ├── detect/               # Per-material segmentation (4 scripts)
+│       │   │   ├── SKILL.md
+│       │   │   └── scripts/          # graphite, graphene, bottom_hbn, top_hbn
+│       │   ├── combine/              # Coordinate transforms + overlay
+│       │   │   ├── SKILL.md
+│       │   │   └── scripts/          # ecc_register, transform, overlay
+│       │   ├── commit/               # Insert polygons into KLayout
+│       │   │   └── SKILL.md
+│       │   └── review/               # Visual validation protocol
+│       │       └── SKILL.md
 │       └── routing/
 │           ├── SKILL.md
 │           └── scripts/
@@ -56,7 +73,7 @@ KlayoutClaw/
 │   └── test_autoroute.sh         # E2E autoroute test
 ├── docs/
 │   ├── tools.md                  # MCP tool reference (5 tools)
-│   ├── skills.md                 # Skills CLI reference (geometry, display, image, visual, nanodevice:routing)
+│   ├── skills.md                 # Skills CLI reference (geometry, display, image, visual, nanodevice:flakedetect, nanodevice:routing)
 │   ├── ui-plugin.md              # UI plugin architecture + pya Qt pitfalls
 │   └── plans/                    # Architecture design docs
 │       ├── 2026-03-08-qtcpserver-mcp-design.md
