@@ -275,6 +275,84 @@ Install: `conda install gdstk matplotlib` (or `pip install gdstk matplotlib`)
 
 ---
 
+## GDS Alignment (nanodevice:gdsalign)
+
+Align microscope stack images to a GDS fabrication template by detecting lithographic markers and computing a similarity transform. Commits warped image + material contours to KLayout.
+
+### Pipeline
+
+```
+1. extract_markers.py → gds_markers.json (4 inner L5/0 marker pair centroids)
+2. detect_markers.py  → image_markers.json (template-matched detections in image)
+3. align_gds.py       → gds_warp.npy + gds_alignment_report.json (similarity transform)
+4. commit_gds.py      → full_stack_gds.png + traces_gds.json (warped outputs)
+```
+
+### Scripts
+
+#### extract_markers.py
+
+Parse GDS template, extract the 4 innermost L5/0 marker pairs (8 squares total).
+
+```bash
+conda run -n base python skills/nanodevice/gdsalign/scripts/extract_markers.py \
+    --gds Template.gds --output-dir output/gdsalign/
+```
+
+#### detect_markers.py
+
+Detect marker pairs in microscope image via multi-scale, multi-rotation template matching.
+
+```bash
+conda run -n base python skills/nanodevice/gdsalign/scripts/detect_markers.py \
+    --image full_stack_raw.jpg --pixel-size 0.087 \
+    --gds-markers output/gdsalign/gds_markers.json --output-dir output/gdsalign/
+```
+
+#### align_gds.py
+
+Exhaustive 2-point correspondence enumeration to compute similarity transform (image_um → GDS_um).
+
+```bash
+conda run -n base python skills/nanodevice/gdsalign/scripts/align_gds.py \
+    --gds-markers output/gdsalign/gds_markers.json \
+    --image-markers output/gdsalign/image_markers.json \
+    --output-dir output/gdsalign/
+```
+
+#### commit_gds.py
+
+Apply warp to image + contours, commit to KLayout. Use `--warp-only` for offline testing.
+
+```bash
+conda run -n base python skills/nanodevice/gdsalign/scripts/commit_gds.py \
+    --warp output/gdsalign/gds_warp.npy --traces output/combine/traces.json \
+    --image full_stack_raw.jpg --pixel-size 0.087 \
+    --gds Template.gds --output-dir output/gdsalign/ [--warp-only]
+```
+
+### Acceptance Thresholds
+
+| Metric | Pass | Fail |
+|--------|------|------|
+| Markers detected | >= 3 | < 3 |
+| Mean residual | < 1.0 um | >= 1.0 um |
+| Max residual | < 2.0 um | >= 2.0 um |
+
+### Dependencies
+
+- `gdstk` — GDS parsing
+- `opencv-python-headless` — template matching, image warp
+- `numpy`, `scipy` — transform computation, least-squares refinement
+
+Conda env: `base` (all deps pre-installed)
+
+### Full Documentation
+
+See `skills/nanodevice/gdsalign/SKILL.md` for orchestrator workflow and `docs/superpowers/specs/2026-03-13-gdsalign-design.md` for design spec.
+
+---
+
 ## Flake Detection (nanodevice:flakedetect)
 
 Agent-orchestrated pipeline for detecting van der Waals heterostructure material boundaries from optical microscope images. Detects hBN, graphene, and graphite from multi-source images and commits polygons to KLayout.
