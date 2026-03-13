@@ -18,6 +18,14 @@
  <text>
 import sys
 import os
+import io
+
+# KLayout GUI app has no terminal — sys.stdout defaults to ASCII encoding.
+# Reconfigure to UTF-8 so print() won't crash on non-ASCII characters.
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Early log to verify macro execution
 _early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
@@ -52,11 +60,14 @@ def _log(msg):
     ts = datetime.datetime.now().isoformat()
     line = "[{}] {}".format(ts, msg)
     try:
-        with open(_log_path, "a") as f:
+        with open(_log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
-    print("[KlayoutClaw] " + msg)
+    try:
+        print("[KlayoutClaw] " + msg)
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        print("[KlayoutClaw] " + msg.encode('ascii', errors='replace').decode('ascii'))
     try:
         if "_klayoutclaw" in sys.modules:
             cb = sys.modules["_klayoutclaw"]
