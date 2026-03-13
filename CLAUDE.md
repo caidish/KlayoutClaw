@@ -39,6 +39,30 @@ KlayoutClaw/
 │   │   └── scripts/
 │   │       └── capture.py
 │   └── nanodevice/
+│       ├── flakedetect/
+│       │   ├── SKILL.md              # Orchestrator (dispatches subagents)
+│       │   ├── scripts/
+│       │   │   └── core.py           # Shared CV utilities (morph, contour, Chamfer)
+│       │   ├── align/                # SIFT + Chamfer cross-substrate alignment
+│       │   │   ├── SKILL.md
+│       │   │   └── scripts/          # sift_align, source_contour, footprint, sweep, refine
+│       │   ├── detect/               # Per-material segmentation (4 scripts)
+│       │   │   ├── SKILL.md
+│       │   │   └── scripts/          # graphite, graphene, bottom_hbn, top_hbn
+│       │   ├── combine/              # Coordinate transforms + overlay
+│       │   │   ├── SKILL.md
+│       │   │   └── scripts/          # ecc_register, transform, overlay
+│       │   ├── commit/               # Insert polygons into KLayout
+│       │   │   └── SKILL.md
+│       │   └── review/               # Visual validation protocol
+│       │       └── SKILL.md
+│       ├── gdsalign/
+│       │   ├── SKILL.md              # GDS template alignment orchestrator
+│       │   └── scripts/
+│       │       ├── extract_markers.py # Parse GDS L5/0 marker pairs
+│       │       ├── detect_markers.py  # Template-match markers in image
+│       │       ├── align_gds.py       # Compute similarity transform
+│       │       └── commit_gds.py      # Warp image + contours, commit to KLayout
 │       └── routing/
 │           ├── SKILL.md
 │           └── scripts/
@@ -52,11 +76,12 @@ KlayoutClaw/
 │   ├── create_hallbar_unrouted.py # Hall bar with pin markers, no traces
 │   ├── evaluate_gds.py           # Hall bar structural evaluation (gdstk)
 │   ├── evaluate_routing.py       # Routing structural validation (gdstk)
+│   ├── test_gdsalign.py          # GDS alignment pipeline tests (12 tests)
 │   ├── test_hallbar.sh           # E2E Hall bar test (Claude + tmux)
 │   └── test_autoroute.sh         # E2E autoroute test
 ├── docs/
 │   ├── tools.md                  # MCP tool reference (5 tools)
-│   ├── skills.md                 # Skills CLI reference (geometry, display, image, visual, nanodevice:routing)
+│   ├── skills.md                 # Skills CLI reference (geometry, display, image, visual, nanodevice:flakedetect, nanodevice:gdsalign, nanodevice:routing)
 │   ├── ui-plugin.md              # UI plugin architecture + pya Qt pitfalls
 │   └── plans/                    # Architecture design docs
 │       ├── 2026-03-08-qtcpserver-mcp-design.md
