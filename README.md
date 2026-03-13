@@ -1,5 +1,9 @@
 # KlayoutClaw
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![MCP](https://img.shields.io/badge/MCP-JSON--RPC%202.0-green.svg)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 MCP server plugin for KLayout — connect your agent harness (Claude Code, Codex, Cline, or any MCP client) to your desktop KLayout. Design layouts in natural language and make batch edits across your GDS files, all through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 Built for device physicists working on 2D material devices, superconducting qubits, photonics, and other micro/nanofabricated systems.
@@ -46,9 +50,10 @@ python tests/test_connection.py
 | `execute_script` | Run arbitrary Python/pya code in KLayout |
 | `save_layout` | Save layout as GDS2 or OASIS |
 | `get_layout_info` | Get layout summary (cells, layers, dbu) |
+| `screenshot` | Capture viewport as PNG (what the user sees) |
 | `auto_route` | **(experimental)** Autoroute connections between pin pairs |
 
-`execute_script` is the power tool — it runs any Python code inside KLayout with access to `pya`, the current layout, and view. The other three handle lifecycle. See [docs/tools.md](docs/tools.md) for full parameter schemas.
+`execute_script` is the power tool — it runs any Python code inside KLayout with access to `pya`, the current layout, and view. The other tools handle lifecycle and visualization. See [docs/tools.md](docs/tools.md) for full parameter schemas.
 
 ### Autorouter (experimental)
 
@@ -133,10 +138,22 @@ claude --plugin-dir ./path/to/KlayoutClaw
 | `geometry` | `/klayoutclaw:geometry` | Create rectangles, polygons, paths, cells, and instances |
 | `display` | `/klayoutclaw:display` | Toggle layer visibility, show/hide layers |
 | `visual` | `/klayoutclaw:visual` | Capture layout as PNG for visual inspection |
+| `image` | `/klayoutclaw:image` | Load reference images (microscope, SEM) as background overlay |
+| `nanodevice:flakedetect` | — | Detect vdW heterostructure material boundaries (hBN, graphene, graphite) from optical microscope images and commit polygons to KLayout |
+| `nanodevice:gdsalign` | — | Align GDS templates to microscope images using lithographic marker detection and similarity transforms |
+| `nanodevice:routing` | — | Place pads and autoroute connections between device features |
 
 Claude also loads these skills automatically when relevant (e.g., "draw a rectangle" triggers the geometry skill).
 
 See [docs/skills.md](docs/skills.md) for full reference.
+
+### Nanodevice Skills
+
+The nanodevice skills are agent-orchestrated pipelines for semiconductor/2D-material device fabrication workflows:
+
+**flakedetect** — Identifies material boundaries in van der Waals heterostructure stacks from optical microscope images. The pipeline has 5 stages: cross-substrate alignment (SIFT + Chamfer), per-material segmentation (graphite, graphene, top/bottom hBN), coordinate transforms + overlay, polygon commit to KLayout, and visual review.
+
+**gdsalign** — Aligns GDS lithography templates to microscope images. Extracts marker pairs from GDS, template-matches them in the image, computes a similarity transform, and warps contours into GDS coordinates.
 
 ## Project Structure
 
@@ -146,21 +163,31 @@ KlayoutClaw/
 │   ├── plugin.json               # Claude Code plugin manifest
 │   └── marketplace.json          # Claude Code marketplace catalog
 ├── plugin/
-│   ├── klayoutclaw_server.lym    # MCP server (v0.5)
+│   ├── klayoutclaw_server.lym    # MCP server (v0.6)
 │   └── klayoutclaw_ui.lym        # UI panel + status bar
 ├── skills/                       # Claude Code skills (auto-loaded)
 │   ├── scripts/mcp_client.py     # Shared MCP client
 │   ├── geometry/                 # Shape creation skills
 │   ├── display/                  # Layer visibility skills
-│   └── visual/                   # Layout capture skill
+│   ├── image/                    # Background image overlay skill
+│   ├── visual/                   # Layout capture skill
+│   └── nanodevice/               # Device fabrication pipelines
+│       ├── flakedetect/          # vdW heterostructure detection
+│       ├── gdsalign/             # GDS template alignment
+│       └── routing/              # Pad placement + autorouting
 ├── tools/
-│   └── gds_to_image.py           # GDS → PNG converter
+│   ├── gds_to_image.py           # GDS → PNG converter
+│   └── route_worker.py           # Subprocess routing engine
 ├── tests/
 │   ├── test_connection.py        # Protocol-level MCP test
 │   ├── test_connection.sh        # E2E connection test
+│   ├── test_flakedetect.py       # Flakedetect pipeline tests (29 tests)
+│   ├── test_gdsalign.py          # GDS alignment tests (12 tests)
 │   ├── create_hallbar.py         # Hall bar creation test
 │   ├── evaluate_gds.py           # Structural evaluation
 │   └── test_hallbar.sh           # E2E Hall bar test
+├── tests_resources/              # Test fixtures
+│   └── ml08/                     # Microscope images + Template.gds
 ├── docs/
 │   ├── tools.md                  # MCP tool reference
 │   ├── skills.md                 # Skills CLI reference
@@ -191,6 +218,9 @@ python tests/evaluate_gds.py /tmp/hallbar.gds
 
 # Full E2E (installs plugin, launches KLayout, tests connection)
 bash tests/test_connection.sh
+
+# Nanodevice skill tests (41 tests — requires test fixtures in tests_resources/)
+pytest tests/test_flakedetect.py tests/test_gdsalign.py -v
 ```
 
 ## Community
