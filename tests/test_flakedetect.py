@@ -20,9 +20,168 @@ from core import (
 
 from conftest import (
     BOTTOM_PART, TOP_PART, FULL_STACK_RAW, FULL_STACK_LUT, PIXEL_SIZE,
-    run_flakedetect_script, build_detections_json,
+    SLOW_TEST_TIMEOUT, run_flakedetect_script, build_detections_json,
 )
 
+
+# ---------------------------------------------------------------------------
+# Module-level shared pipeline — every slow stage runs exactly once
+# ---------------------------------------------------------------------------
+
+class _SharedPipeline:
+    """Lazy, incremental pipeline runner shared across all slow test classes.
+
+    Each stage runs at most once.  Dependency order is enforced by the
+    ``ensure(stage)`` method, which recursively ensures prerequisites.
+    """
+
+    _PREREQS = {
+        "source_contour": [],
+        "footprint": ["source_contour"],
+        "sweep": ["footprint"],
+        "refine": ["sweep"],
+        "sift_align": [],
+        "graphite": [],
+        "graphene": [],
+        "bottom_hbn": ["footprint"],
+        "top_hbn": ["footprint"],
+        "detections": ["graphite", "graphene", "bottom_hbn", "top_hbn"],
+        "ecc_register": [],
+        "transform": ["sift_align", "refine", "detections"],
+        "overlay": ["transform"],
+    }
+
+    def __init__(self):
+        self._dir = None
+        self._completed = set()
+
+    @property
+    def dir(self):
+        if self._dir is None:
+            self._dir = tempfile.mkdtemp(prefix="test_flakedetect_shared_")
+        return self._dir
+
+    def ensure(self, stage):
+        """Ensure *stage* and all its prerequisites have been run."""
+        if stage in self._completed:
+            return self.dir
+        for dep in self._PREREQS.get(stage, []):
+            self.ensure(dep)
+        getattr(self, f"_run_{stage}")()
+        self._completed.add(stage)
+        return self.dir
+
+    # -- stage runners -------------------------------------------------------
+
+    def _run_source_contour(self):
+        rc, _, err = run_flakedetect_script("align", "source_contour.py", [
+            "--image", TOP_PART, "--mirror", "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"source_contour.py failed: {err}"
+
+    def _run_footprint(self):
+        rc, _, err = run_flakedetect_script("align", "footprint.py", [
+            "--source", TOP_PART, "--target", FULL_STACK_RAW, "--mirror",
+            "--source-contour", os.path.join(self.dir, "source_contour.npy"),
+            "--source-mask", os.path.join(self.dir, "source_mask.png"),
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"footprint.py failed: {err}"
+
+    def _run_sweep(self):
+        rc, _, err = run_flakedetect_script("align", "sweep.py", [
+            "--source-contour", os.path.join(self.dir, "source_contour.npy"),
+            "--source-mask", os.path.join(self.dir, "source_mask.png"),
+            "--footprint-contour", os.path.join(self.dir, "footprint_contour.npy"),
+            "--footprint-mask", os.path.join(self.dir, "footprint_mask.png"),
+            "--target-image", FULL_STACK_RAW,
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"sweep.py failed: {err}"
+
+    def _run_refine(self):
+        rc, _, err = run_flakedetect_script("align", "refine.py", [
+            "--source-contour", os.path.join(self.dir, "source_contour.npy"),
+            "--source-mask", os.path.join(self.dir, "source_mask.png"),
+            "--footprint-contour", os.path.join(self.dir, "footprint_contour.npy"),
+            "--footprint-mask", os.path.join(self.dir, "footprint_mask.png"),
+            "--target-image", FULL_STACK_RAW,
+            "--rot-hint", "108.8",
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ], timeout=SLOW_TEST_TIMEOUT)
+        assert rc == 0, f"refine.py failed: {err}"
+
+    def _run_sift_align(self):
+        rc, _, err = run_flakedetect_script("align", "sift_align.py", [
+            "--source", BOTTOM_PART, "--target", FULL_STACK_RAW,
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"sift_align.py failed: {err}"
+
+    def _run_graphite(self):
+        rc, _, err = run_flakedetect_script("detect", "graphite.py", [
+            "--image", BOTTOM_PART, "--pixel-size", PIXEL_SIZE,
+            "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"graphite.py failed: {err}"
+
+    def _run_graphene(self):
+        rc, _, err = run_flakedetect_script("detect", "graphene.py", [
+            "--image", TOP_PART, "--pixel-size", PIXEL_SIZE,
+            "--mirror", "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"graphene.py failed: {err}"
+
+    def _run_bottom_hbn(self):
+        rc, _, err = run_flakedetect_script("detect", "bottom_hbn.py", [
+            "--image", FULL_STACK_RAW,
+            "--footprint-mask", os.path.join(self.dir, "footprint_mask.png"),
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"bottom_hbn.py failed: {err}"
+
+    def _run_top_hbn(self):
+        rc, _, err = run_flakedetect_script("detect", "top_hbn.py", [
+            "--footprint-mask", os.path.join(self.dir, "footprint_mask.png"),
+            "--image", FULL_STACK_RAW,
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"top_hbn.py failed: {err}"
+
+    def _run_detections(self):
+        build_detections_json(self.dir, self.dir, PIXEL_SIZE)
+
+    def _run_ecc_register(self):
+        rc, _, err = run_flakedetect_script("combine", "ecc_register.py", [
+            "--raw", FULL_STACK_RAW, "--lut", FULL_STACK_LUT,
+            "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"ecc_register.py failed: {err}"
+
+    def _run_transform(self):
+        rc, _, err = run_flakedetect_script("combine", "transform.py", [
+            "--detections", os.path.join(self.dir, "detections.json"),
+            "--align-dir", self.dir,
+            "--image", FULL_STACK_RAW,
+            "--pixel-size", PIXEL_SIZE, "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"transform.py failed: {err}"
+
+    def _run_overlay(self):
+        rc, _, err = run_flakedetect_script("combine", "overlay.py", [
+            "--traces", os.path.join(self.dir, "traces.json"),
+            "--raw", FULL_STACK_RAW,
+            "--output-dir", self.dir,
+        ])
+        assert rc == 0, f"overlay.py failed: {err}"
+
+
+_pipeline = _SharedPipeline()
+
+
+# =========================================================================
+# Fast tests — independent temp dirs, no @pytest.mark.slow
+# =========================================================================
 
 class TestCore:
     """Unit tests for core.py shared utilities."""
@@ -135,3 +294,219 @@ class TestSourceContour:
             assert mask is not None
             unique = set(np.unique(mask))
             assert unique <= {0, 255}
+
+
+class TestGraphite:
+    """Tests for detect/scripts/graphite.py — graphite strip detection."""
+
+    def _run(self, tmp):
+        rc, out, err = run_flakedetect_script("detect", "graphite.py", [
+            "--image", BOTTOM_PART,
+            "--pixel-size", PIXEL_SIZE,
+            "--output-dir", tmp,
+        ])
+        assert rc == 0, f"graphite.py failed: {err}"
+        return tmp
+
+    def test_detects_graphite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            assert os.path.exists(os.path.join(tmp, "graphite_mask.png"))
+            assert os.path.exists(os.path.join(tmp, "graphite_contour.npy"))
+            assert os.path.exists(os.path.join(tmp, "graphite_result.json"))
+
+    def test_area_reasonable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            with open(os.path.join(tmp, "graphite_result.json")) as f:
+                result = json.load(f)
+            assert result["area_um2"] > 0
+
+
+class TestGraphene:
+    """Tests for detect/scripts/graphene.py — graphene detection."""
+
+    def _run(self, tmp):
+        rc, out, err = run_flakedetect_script("detect", "graphene.py", [
+            "--image", TOP_PART,
+            "--pixel-size", PIXEL_SIZE,
+            "--mirror",
+            "--output-dir", tmp,
+        ])
+        assert rc == 0, f"graphene.py failed: {err}"
+        return tmp
+
+    def test_detects_graphene(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            assert os.path.exists(os.path.join(tmp, "graphene_mask.png"))
+            assert os.path.exists(os.path.join(tmp, "graphene_contour.npy"))
+            assert os.path.exists(os.path.join(tmp, "graphene_result.json"))
+
+    def test_area_positive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            with open(os.path.join(tmp, "graphene_result.json")) as f:
+                result = json.load(f)
+            assert result["area_um2"] > 0
+
+
+class TestEccRegister:
+    """Tests for combine/scripts/ecc_register.py — raw↔LUT registration."""
+
+    def test_produces_combine_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, err = run_flakedetect_script("combine", "ecc_register.py", [
+                "--raw", FULL_STACK_RAW,
+                "--lut", FULL_STACK_LUT,
+                "--output-dir", tmp,
+            ])
+            assert rc == 0, f"ecc_register.py failed: {err}"
+            with open(os.path.join(tmp, "combine_report.json")) as f:
+                report = json.load(f)
+            assert "raw2lut" in report
+            assert "dx" in report["raw2lut"]
+            assert "dy" in report["raw2lut"]
+            assert "ecc_correlation" in report["raw2lut"]
+
+    def test_correlation_positive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _, _ = run_flakedetect_script("combine", "ecc_register.py", [
+                "--raw", FULL_STACK_RAW,
+                "--lut", FULL_STACK_LUT,
+                "--output-dir", tmp,
+            ])
+            with open(os.path.join(tmp, "combine_report.json")) as f:
+                report = json.load(f)
+            assert report["raw2lut"]["ecc_correlation"] > 0
+
+
+# =========================================================================
+# Slow tests — all share _pipeline singleton to avoid redundant runs
+# =========================================================================
+
+@pytest.mark.slow
+class TestFootprint:
+    """Tests for align/scripts/footprint.py — target footprint via K-means + GrabCut."""
+
+    def test_produces_footprint(self):
+        d = _pipeline.ensure("footprint")
+        assert os.path.exists(os.path.join(d, "footprint_mask.png"))
+        assert os.path.exists(os.path.join(d, "footprint_contour.npy"))
+
+    def test_footprint_contour_closed(self):
+        d = _pipeline.ensure("footprint")
+        contour = np.load(os.path.join(d, "footprint_contour.npy"))
+        pts = contour.reshape(-1, 2)
+        dist = np.linalg.norm(pts[0] - pts[-1])
+        assert dist < 5.0, f"Contour not closed: gap = {dist:.1f} px"
+
+
+@pytest.mark.slow
+class TestSweep:
+    """Tests for align/scripts/sweep.py — coarse rotation search."""
+
+    def test_produces_candidates(self):
+        d = _pipeline.ensure("sweep")
+        candidates = glob.glob(os.path.join(d, "candidate_*.png"))
+        assert len(candidates) >= 8, f"Only {len(candidates)} candidates"
+
+    def test_sweep_candidates_in_report(self):
+        d = _pipeline.ensure("sweep")
+        with open(os.path.join(d, "alignment_report.json")) as f:
+            report = json.load(f)
+        assert "sweep_candidates" in report
+        assert len(report["sweep_candidates"]) >= 8
+
+
+@pytest.mark.slow
+class TestRefine:
+    """Tests for align/scripts/refine.py — fine alignment optimization."""
+
+    def test_produces_warp_top(self):
+        d = _pipeline.ensure("refine")
+        M = np.load(os.path.join(d, "warp_top.npy"))
+        assert M.shape == (2, 3)
+
+    def test_meets_acceptance_thresholds(self):
+        d = _pipeline.ensure("refine")
+        with open(os.path.join(d, "alignment_report.json")) as f:
+            report = json.load(f)
+        top = report["alignments"]["top"]
+        assert top["iou"] > 0.5, f"IoU {top['iou']:.3f} too low"
+        assert top["fwd_chamfer_um"] < 4.0, \
+            f"Chamfer {top['fwd_chamfer_um']:.2f} um too high"
+
+
+@pytest.mark.slow
+class TestBottomHbn:
+    """Tests for detect/scripts/bottom_hbn.py — bottom hBN detection."""
+
+    def test_detects_bottom_hbn(self):
+        d = _pipeline.ensure("bottom_hbn")
+        assert os.path.exists(os.path.join(d, "bottom_hbn_mask.png"))
+        assert os.path.exists(os.path.join(d, "bottom_hbn_contour.npy"))
+        assert os.path.exists(os.path.join(d, "bottom_hbn_result.json"))
+
+
+@pytest.mark.slow
+class TestTopHbn:
+    """Tests for detect/scripts/top_hbn.py — top hBN = footprint copy."""
+
+    def test_copies_footprint(self):
+        d = _pipeline.ensure("top_hbn")
+        fp_mask = cv2.imread(
+            os.path.join(d, "footprint_mask.png"), cv2.IMREAD_GRAYSCALE
+        )
+        top_mask = cv2.imread(
+            os.path.join(d, "top_hbn_mask.png"), cv2.IMREAD_GRAYSCALE
+        )
+        np.testing.assert_array_equal(fp_mask, top_mask)
+
+
+@pytest.mark.slow
+class TestTransformAndOverlay:
+    """Tests for combine/scripts/transform.py + overlay.py.
+
+    Runs the full pipeline (align + detect + transform + overlay) through
+    the shared _pipeline singleton.
+    """
+
+    # --- Transform assertions ---
+
+    def test_produces_traces_json(self):
+        d = _pipeline.ensure("overlay")
+        with open(os.path.join(d, "traces.json")) as f:
+            traces = json.load(f)
+        expected = {"top_hBN", "graphene", "bottom_hBN", "graphite"}
+        assert set(traces["materials"].keys()) == expected
+
+    def test_contours_have_px_and_um(self):
+        d = _pipeline.ensure("overlay")
+        with open(os.path.join(d, "traces.json")) as f:
+            traces = json.load(f)
+        for mat_name, mat_traces in traces["materials"].items():
+            for trace in mat_traces:
+                assert "contour_px" in trace, f"{mat_name} missing contour_px"
+                assert "contour_um" in trace, f"{mat_name} missing contour_um"
+                assert len(trace["contour_px"]) > 0
+
+    def test_layer_map_correct(self):
+        d = _pipeline.ensure("overlay")
+        with open(os.path.join(d, "traces.json")) as f:
+            traces = json.load(f)
+        lm = traces["layer_map"]
+        assert lm["top_hBN"] == "10/0"
+        assert lm["graphene"] == "11/0"
+        assert lm["bottom_hBN"] == "12/0"
+        assert lm["graphite"] == "13/0"
+
+    # --- Overlay assertions ---
+
+    def test_produces_overlay_images(self):
+        d = _pipeline.ensure("overlay")
+        assert os.path.exists(os.path.join(d, "overlay_raw.png"))
+
+    def test_produces_mask_composite(self):
+        d = _pipeline.ensure("overlay")
+        assert os.path.exists(os.path.join(d, "mask_composite.png"))

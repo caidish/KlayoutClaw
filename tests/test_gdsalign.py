@@ -1,31 +1,27 @@
 #!/usr/bin/env python
-"""Tests for nanodevice:gdsalign scripts."""
+"""Tests for nanodevice:gdsalign pipeline scripts.
+
+All tests use local fixtures in tests_resources/ml08/.
+"""
 import json
 import os
-import subprocess
-import sys
 import tempfile
 
 import numpy as np
+import pytest
 
-SCRIPT_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "skills", "nanodevice", "gdsalign", "scripts"
+from conftest import (
+    FULL_STACK_RAW, PIXEL_SIZE, TEMPLATE_GDS, run_gdsalign_script,
 )
-GDS_PATH = "/Volumes/RandomData/Stacks/Template.gds"
-
-
-def run_script(name, args):
-    """Run a gdsalign script and return (returncode, stdout, stderr)."""
-    cmd = [sys.executable, os.path.join(SCRIPT_DIR, name)] + args
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    return r.returncode, r.stdout, r.stderr
 
 
 class TestExtractMarkers:
+    """Tests for extract_markers.py — GDS L5/0 marker pair extraction."""
+
     def test_extracts_4_pairs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rc, out, err = run_script("extract_markers.py", [
-                "--gds", GDS_PATH, "--output-dir", tmp
+            rc, out, err = run_gdsalign_script("extract_markers.py", [
+                "--gds", TEMPLATE_GDS, "--output-dir", tmp,
             ])
             assert rc == 0, f"Script failed: {err}"
             with open(os.path.join(tmp, "gds_markers.json")) as f:
@@ -34,8 +30,8 @@ class TestExtractMarkers:
 
     def test_pair_centers_match_known_values(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rc, _, _ = run_script("extract_markers.py", [
-                "--gds", GDS_PATH, "--output-dir", tmp
+            run_gdsalign_script("extract_markers.py", [
+                "--gds", TEMPLATE_GDS, "--output-dir", tmp,
             ])
             with open(os.path.join(tmp, "gds_markers.json")) as f:
                 data = json.load(f)
@@ -51,8 +47,8 @@ class TestExtractMarkers:
 
     def test_each_pair_has_2_markers_with_bbox(self):
         with tempfile.TemporaryDirectory() as tmp:
-            run_script("extract_markers.py", [
-                "--gds", GDS_PATH, "--output-dir", tmp
+            run_gdsalign_script("extract_markers.py", [
+                "--gds", TEMPLATE_GDS, "--output-dir", tmp,
             ])
             with open(os.path.join(tmp, "gds_markers.json")) as f:
                 data = json.load(f)
@@ -63,14 +59,12 @@ class TestExtractMarkers:
                     assert len(m["bbox"]) == 2
 
 
-ML08_IMAGE = "/Volumes/RandomData/Stacks/ML08/full_stack_raw.jpg"
-ML08_PIXEL_SIZE = "0.087"
-
-
 class TestDetectMarkers:
+    """Tests for detect_markers.py — template matching in microscope image."""
+
     def _run_extract_first(self, tmp):
-        rc, _, err = run_script("extract_markers.py", [
-            "--gds", GDS_PATH, "--output-dir", tmp
+        rc, _, err = run_gdsalign_script("extract_markers.py", [
+            "--gds", TEMPLATE_GDS, "--output-dir", tmp,
         ])
         assert rc == 0, f"extract_markers failed: {err}"
         return os.path.join(tmp, "gds_markers.json")
@@ -78,9 +72,9 @@ class TestDetectMarkers:
     def test_detects_markers_in_ml08(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_markers = self._run_extract_first(tmp)
-            rc, out, err = run_script("detect_markers.py", [
-                "--image", ML08_IMAGE,
-                "--pixel-size", ML08_PIXEL_SIZE,
+            rc, out, err = run_gdsalign_script("detect_markers.py", [
+                "--image", FULL_STACK_RAW,
+                "--pixel-size", PIXEL_SIZE,
                 "--gds-markers", gds_markers,
                 "--output-dir", tmp,
             ])
@@ -93,9 +87,9 @@ class TestDetectMarkers:
     def test_detections_have_required_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_markers = self._run_extract_first(tmp)
-            run_script("detect_markers.py", [
-                "--image", ML08_IMAGE,
-                "--pixel-size", ML08_PIXEL_SIZE,
+            run_gdsalign_script("detect_markers.py", [
+                "--image", FULL_STACK_RAW,
+                "--pixel-size", PIXEL_SIZE,
                 "--gds-markers", gds_markers,
                 "--output-dir", tmp,
             ])
@@ -110,9 +104,9 @@ class TestDetectMarkers:
     def test_produces_diagnostic_images(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_markers = self._run_extract_first(tmp)
-            run_script("detect_markers.py", [
-                "--image", ML08_IMAGE,
-                "--pixel-size", ML08_PIXEL_SIZE,
+            run_gdsalign_script("detect_markers.py", [
+                "--image", FULL_STACK_RAW,
+                "--pixel-size", PIXEL_SIZE,
                 "--gds-markers", gds_markers,
                 "--output-dir", tmp,
             ])
@@ -121,13 +115,15 @@ class TestDetectMarkers:
 
 
 class TestAlignGds:
+    """Tests for align_gds.py — marker correspondence + similarity transform."""
+
     def _run_pipeline_to_detect(self, tmp):
-        run_script("extract_markers.py", [
-            "--gds", GDS_PATH, "--output-dir", tmp
+        run_gdsalign_script("extract_markers.py", [
+            "--gds", TEMPLATE_GDS, "--output-dir", tmp,
         ])
-        run_script("detect_markers.py", [
-            "--image", ML08_IMAGE,
-            "--pixel-size", ML08_PIXEL_SIZE,
+        run_gdsalign_script("detect_markers.py", [
+            "--image", FULL_STACK_RAW,
+            "--pixel-size", PIXEL_SIZE,
             "--gds-markers", os.path.join(tmp, "gds_markers.json"),
             "--output-dir", tmp,
         ])
@@ -139,7 +135,7 @@ class TestAlignGds:
     def test_computes_transform(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_m, img_m = self._run_pipeline_to_detect(tmp)
-            rc, out, err = run_script("align_gds.py", [
+            rc, out, err = run_gdsalign_script("align_gds.py", [
                 "--gds-markers", gds_m,
                 "--image-markers", img_m,
                 "--output-dir", tmp,
@@ -153,7 +149,7 @@ class TestAlignGds:
     def test_warp_matrix_is_2x3(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_m, img_m = self._run_pipeline_to_detect(tmp)
-            run_script("align_gds.py", [
+            run_gdsalign_script("align_gds.py", [
                 "--gds-markers", gds_m,
                 "--image-markers", img_m,
                 "--output-dir", tmp,
@@ -164,7 +160,7 @@ class TestAlignGds:
     def test_scale_near_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_m, img_m = self._run_pipeline_to_detect(tmp)
-            run_script("align_gds.py", [
+            run_gdsalign_script("align_gds.py", [
                 "--gds-markers", gds_m,
                 "--image-markers", img_m,
                 "--output-dir", tmp,
@@ -172,12 +168,12 @@ class TestAlignGds:
             with open(os.path.join(tmp, "gds_alignment_report.json")) as f:
                 report = json.load(f)
             scale = report["transform"]["scale"]
-            assert 0.8 < scale < 1.5, f"Scale {scale} outside expected range"
+            assert 0.8 < scale < 1.5, f"Scale {scale} outside range"
 
     def test_residual_below_threshold(self):
         with tempfile.TemporaryDirectory() as tmp:
             gds_m, img_m = self._run_pipeline_to_detect(tmp)
-            run_script("align_gds.py", [
+            run_gdsalign_script("align_gds.py", [
                 "--gds-markers", gds_m,
                 "--image-markers", img_m,
                 "--output-dir", tmp,
@@ -187,33 +183,67 @@ class TestAlignGds:
             assert report["quality"]["mean_residual_um"] < 2.0
 
 
-ML08_TRACES = "/Volumes/RandomData/Stacks/ML08/output/combine/traces.json"
-
-
 class TestCommitGds:
+    """Tests for commit_gds.py — warp image + contours into GDS coords."""
+
     def _run_full_pipeline(self, tmp):
-        run_script("extract_markers.py", ["--gds", GDS_PATH, "--output-dir", tmp])
-        run_script("detect_markers.py", [
-            "--image", ML08_IMAGE, "--pixel-size", ML08_PIXEL_SIZE,
+        run_gdsalign_script("extract_markers.py", [
+            "--gds", TEMPLATE_GDS, "--output-dir", tmp,
+        ])
+        run_gdsalign_script("detect_markers.py", [
+            "--image", FULL_STACK_RAW, "--pixel-size", PIXEL_SIZE,
             "--gds-markers", os.path.join(tmp, "gds_markers.json"),
             "--output-dir", tmp,
         ])
-        run_script("align_gds.py", [
+        run_gdsalign_script("align_gds.py", [
             "--gds-markers", os.path.join(tmp, "gds_markers.json"),
             "--image-markers", os.path.join(tmp, "image_markers.json"),
             "--output-dir", tmp,
         ])
         return tmp
 
+    def _make_synthetic_traces(self, tmp):
+        """Create a minimal traces.json with a square contour."""
+        traces = {
+            "image": "full_stack_raw.jpg",
+            "pixel_size_um": 0.087,
+            "image_size_px": [4096, 3000],
+            "image_size_um": [356.352, 261.0],
+            "stack": ["top_hBN", "graphene", "bottom_hBN", "graphite"],
+            "layer_map": {
+                "top_hBN": "10/0",
+                "graphene": "11/0",
+                "bottom_hBN": "12/0",
+                "graphite": "13/0",
+            },
+            "materials": {
+                "graphite": [{
+                    "id": 0,
+                    "contour_px": [[100, 100], [200, 100], [200, 200], [100, 200]],
+                    "contour_um": [[8.7, 8.7], [17.4, 8.7], [17.4, 17.4], [8.7, 17.4]],
+                    "area_um2": 75.69,
+                    "num_points": 4,
+                }],
+                "graphene": [],
+                "bottom_hBN": [],
+                "top_hBN": [],
+            },
+        }
+        path = os.path.join(tmp, "traces.json")
+        with open(path, "w") as f:
+            json.dump(traces, f)
+        return path
+
     def test_warp_only_produces_warped_image(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._run_full_pipeline(tmp)
-            rc, out, err = run_script("commit_gds.py", [
+            traces_path = self._make_synthetic_traces(tmp)
+            rc, out, err = run_gdsalign_script("commit_gds.py", [
                 "--warp", os.path.join(tmp, "gds_warp.npy"),
-                "--traces", ML08_TRACES,
-                "--image", ML08_IMAGE,
-                "--pixel-size", ML08_PIXEL_SIZE,
-                "--gds", GDS_PATH,
+                "--traces", traces_path,
+                "--image", FULL_STACK_RAW,
+                "--pixel-size", PIXEL_SIZE,
+                "--gds", TEMPLATE_GDS,
                 "--output-dir", tmp,
                 "--warp-only",
             ])
@@ -224,12 +254,13 @@ class TestCommitGds:
     def test_transformed_contours_in_gds_coords(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._run_full_pipeline(tmp)
-            run_script("commit_gds.py", [
+            traces_path = self._make_synthetic_traces(tmp)
+            run_gdsalign_script("commit_gds.py", [
                 "--warp", os.path.join(tmp, "gds_warp.npy"),
-                "--traces", ML08_TRACES,
-                "--image", ML08_IMAGE,
-                "--pixel-size", ML08_PIXEL_SIZE,
-                "--gds", GDS_PATH,
+                "--traces", traces_path,
+                "--image", FULL_STACK_RAW,
+                "--pixel-size", PIXEL_SIZE,
+                "--gds", TEMPLATE_GDS,
                 "--output-dir", tmp,
                 "--warp-only",
             ])
@@ -238,5 +269,7 @@ class TestCommitGds:
             for mat_name, mat_data in data["materials"].items():
                 for trace in mat_data:
                     for pt in trace["contour_gds"]:
-                        assert -2000 < pt[0] < 4000, f"{mat_name} x={pt[0]} out of range"
-                        assert -2000 < pt[1] < 3000, f"{mat_name} y={pt[1]} out of range"
+                        assert -2000 < pt[0] < 4000, \
+                            f"{mat_name} x={pt[0]} out of range"
+                        assert -2000 < pt[1] < 3000, \
+                            f"{mat_name} y={pt[1]} out of range"

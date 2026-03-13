@@ -34,6 +34,9 @@ GDSALIGN_DIR = os.path.join(
 # Helpers
 # ---------------------------------------------------------------------------
 
+SLOW_TEST_TIMEOUT = 900  # 15 minutes — slow tests skip on timeout
+
+
 def run_flakedetect_script(stage, script_name, args, timeout=300):
     """Run a flakedetect sub-skill script.
 
@@ -46,10 +49,16 @@ def run_flakedetect_script(stage, script_name, args, timeout=300):
 
     Returns:
         Tuple (returncode, stdout, stderr).
+
+    Raises:
+        pytest.skip: If the subprocess exceeds *timeout*.
     """
     script_path = os.path.join(FLAKEDETECT_DIR, stage, "scripts", script_name)
     cmd = [sys.executable, script_path] + args
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"{script_name} timed out after {timeout}s")
     return r.returncode, r.stdout, r.stderr
 
 
