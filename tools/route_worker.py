@@ -138,6 +138,20 @@ def rasterize_region(region: kdb.Region, bbox: kdb.Box,
     return grid
 
 
+def rasterize_region_kdb(region: kdb.Region, bbox: kdb.Box,
+                         resolution_dbu: int) -> np.ndarray:
+    """Rasterize a kdb.Region into a 2D boolean numpy array using KLayout's native rasterizer.
+
+    Grid axes: row = y (bottom-to-top mapped to 0..nrows-1), col = x.
+    """
+    ncols = max(1, (bbox.width() + resolution_dbu - 1) // resolution_dbu)
+    nrows = max(1, (bbox.height() + resolution_dbu - 1) // resolution_dbu)
+    origin = kdb.Point(bbox.left, bbox.bottom)
+    step = kdb.Vector(resolution_dbu, resolution_dbu)
+    raster = np.array(region.rasterize(origin, step, ncols, nrows))
+    return raster > 0
+
+
 # ---------------------------------------------------------------------------
 # Coordinate conversion helpers
 # ---------------------------------------------------------------------------
