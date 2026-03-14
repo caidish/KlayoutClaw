@@ -373,6 +373,45 @@ def route(config: dict) -> dict:
 
     obs_region = build_obstacle_region(cell, layout, obstacle_layers, 0)
 
+    # Build pin footprint regions (used for obstacle exclusion, cost marking, and damping)
+    pin_radius = resolution_dbu  # half-width of pin footprint box
+    pin_regions_a = kdb.Region()
+    for px, py in pins_a:
+        pin_regions_a.insert(kdb.Box(
+            px - pin_radius, py - pin_radius,
+            px + pin_radius, py + pin_radius))
+
+    pin_regions_b = kdb.Region()
+    for px, py in pins_b:
+        pin_regions_b.insert(kdb.Box(
+            px - pin_radius, py - pin_radius,
+            px + pin_radius, py + pin_radius))
+
+    # Subtract pin clearance from obstacles — pins often sit on device geometry
+    # (e.g. contact tips on mesa layer). Clear a corridor around each pin so
+    # paths can reach them through the obstacle field. The clearance must be
+    # large enough to cut through the full obstacle + damping zone.
+    all_pin_region = pin_regions_a + pin_regions_b
+    raw_obs_region = build_obstacle_region(cell, layout, obstacle_layers, 0)
+    pin_exclusion = kdb.Region()
+    for pin_list in [pins_a, pins_b]:
+        for px, py in pin_list:
+            # Find the obstacle shape containing this pin
+            pt_box = kdb.Box(px - 1, py - 1, px + 1, py + 1)
+            touching = raw_obs_region.interacting(kdb.Region(pt_box))
+            if touching.is_empty():
+                clear_radius = obs_safe_dbu + resolution_dbu * 2
+            else:
+                obs_bbox = touching.bbox()
+                dx = max(abs(px - obs_bbox.left), abs(px - obs_bbox.right))
+                dy = max(abs(py - obs_bbox.bottom), abs(py - obs_bbox.top))
+                max_dist = int(math.sqrt(dx * dx + dy * dy))
+                clear_radius = max_dist + obs_safe_dbu + resolution_dbu * 2
+            pin_exclusion.insert(kdb.Box(
+                px - clear_radius, py - clear_radius,
+                px + clear_radius, py + clear_radius))
+    obs_region = obs_region - pin_exclusion
+
     # Compute bounding box (cell bbox with margin)
     cell_bbox = cell.bbox()
     margin = max(obs_safe_dbu, resolution_dbu * 10)
@@ -388,20 +427,6 @@ def route(config: dict) -> dict:
     cost = build_cost_grid_graduated(
         obs_grid, obs_region, bbox, resolution_dbu,
         obs_hardness, obs_damping_step, obs_safe_dbu)
-
-    # Add pin costs: mark pin cells as -2 with damping halos
-    pin_radius = resolution_dbu  # half-width of pin footprint box
-    pin_regions_a = kdb.Region()
-    for px, py in pins_a:
-        pin_regions_a.insert(kdb.Box(
-            px - pin_radius, py - pin_radius,
-            px + pin_radius, py + pin_radius))
-
-    pin_regions_b = kdb.Region()
-    for px, py in pins_b:
-        pin_regions_b.insert(kdb.Box(
-            px - pin_radius, py - pin_radius,
-            px + pin_radius, py + pin_radius))
 
     # Rasterize pin footprints as -2 (overwrite everything)
     all_pin_region = pin_regions_a + pin_regions_b
@@ -462,25 +487,24 @@ def route(config: dict) -> dict:
         start_rc = dbu_to_grid(pa[0], pa[1], bbox, resolution_dbu)
         end_rc = dbu_to_grid(pb[0], pb[1], bbox, resolution_dbu)
 
-        # Step 1: Recover this pair's pin cells to walkable (cost=1)
-        sr, sc = start_rc
-        er, ec = end_rc
-        sr = max(0, min(sr, cost.shape[0] - 1))
-        sc = max(0, min(sc, cost.shape[1] - 1))
-        er = max(0, min(er, cost.shape[0] - 1))
-        ec = max(0, min(ec, cost.shape[1] - 1))
-        orig_start_cost = cost[sr, sc]
-        orig_end_cost = cost[er, ec]
-        cost[sr, sc] = 1.0
-        cost[er, ec] = 1.0
+        # Step 1: Recover this pair's pin footprint regions to walkable (cost=1)
+        # Rasterize each pin's footprint box and save/restore all affected cells
+        pin_a_box = kdb.Box(pa[0] - pin_radius, pa[1] - pin_radius,
+                            pa[0] + pin_radius, pa[1] + pin_radius)
+        pin_b_box = kdb.Box(pb[0] - pin_radius, pb[1] - pin_radius,
+                            pb[0] + pin_radius, pb[1] + pin_radius)
+        pair_pin_region = kdb.Region(pin_a_box) + kdb.Region(pin_b_box)
+        pair_pin_grid = rasterize_region_kdb(pair_pin_region, bbox, resolution_dbu)
+        # Save original costs and set to walkable
+        saved_pin_costs = cost[pair_pin_grid].copy()
+        cost[pair_pin_grid] = 1.0
 
         # Step 2: Find path
         path_rc = find_path(cost, start_rc, end_rc)
         if path_rc is None:
             errors.append(f"No path found for pin pair {i}->{j}")
             # Restore pin cells
-            cost[sr, sc] = orig_start_cost
-            cost[er, ec] = orig_end_cost
+            cost[pair_pin_grid] = saved_pin_costs
             continue
 
         # Step 3: Convert grid path to dbu coordinates
@@ -517,9 +541,8 @@ def route(config: dict) -> dict:
                         cost, damping, damping > 0, r0, c0,
                         condition_fn=lambda existing, new: (existing > 0) & (existing < new))
 
-        # Step 5: Restore this pair's pin cells to blocked (-2)
-        cost[sr, sc] = -2.0
-        cost[er, ec] = -2.0
+        # Step 5: Restore this pair's pin footprint to blocked (-2)
+        cost[pair_pin_grid] = -2.0
 
     return {
         "status": "success" if not errors else "partial",
