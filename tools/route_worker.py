@@ -507,11 +507,16 @@ def route(config: dict) -> dict:
             cost[pair_pin_grid] = saved_pin_costs
             continue
 
-        # Step 3: Convert grid path to dbu coordinates
+        # Step 3: Convert grid path to dbu coordinates and snap endpoints to pins
         path_dbu = []
         for r, c in path_rc:
             x, y = grid_to_dbu(r, c, bbox, resolution_dbu)
             path_dbu.append([x, y])
+        # Snap first/last waypoints to exact pin coordinates so paths
+        # visually connect to pins (grid cell centers are offset by up to
+        # half a resolution step from the actual pin position)
+        path_dbu[0] = list(pa)
+        path_dbu[-1] = list(pb)
         path_dbu = compress_path(path_dbu)
 
         result_paths.append({
