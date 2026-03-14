@@ -1,5 +1,6 @@
 # KLayout source (reference only)
 .klayout/
+.klayout_roter/
 
 # Test outputs (generated)
 test_hallbar.gds
