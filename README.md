@@ -227,6 +227,10 @@ pytest tests/test_flakedetect.py tests/test_gdsalign.py -v
 
 Built for the device physics community. Interested in contributing? See [DEVELOPMENT.md](DEVELOPMENT.md) or contact **caidish1234@gmail.com**.
 
+## Acknowledgments
+
+The auto-routing engine (`tools/route_worker.py`) incorporates algorithmic techniques from [Klayout-Router](https://github.com/Legendrexial/Klayout-Router) by **Legendrexial** — including graduated damping cost fields, pin-aware routing with per-pair recovery, and sorted routing order. Klayout-Router is licensed under the MIT License.
+
 ## License
 
 MIT
