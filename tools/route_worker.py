@@ -172,6 +172,100 @@ def grid_to_dbu(row: int, col: int, bbox: kdb.Box,
     return (x, y)
 
 
+def conditional_overwrite(cost: np.ndarray, content: np.ndarray,
+                          content_mask: np.ndarray,
+                          r0: int, c0: int,
+                          condition_fn=None) -> None:
+    """Update cost grid subregion where both content_mask and condition_fn are true.
+
+    Args:
+        cost: Full cost grid (modified in-place).
+        content: New values to write (shape must fit in cost[r0:r0+nrows, c0:c0+ncols]).
+        content_mask: Boolean mask — which cells in content are candidates.
+        r0, c0: Top-left offset of the subregion in the full cost grid.
+        condition_fn: Function (existing_slice, content) -> bool mask.
+            Receives the existing cost subregion AND the content array,
+            enabling content-dependent conditions like "only increase".
+            Default: always True (unconditional overwrite of masked cells).
+    """
+    nrows, ncols = content.shape
+    # Clip to grid bounds
+    grid_rows, grid_cols = cost.shape
+    r1 = min(r0 + nrows, grid_rows)
+    c1 = min(c0 + ncols, grid_cols)
+    r0_c = max(r0, 0)
+    c0_c = max(c0, 0)
+    if r0_c >= r1 or c0_c >= c1:
+        return
+    # Compute content slice offsets
+    cr0 = r0_c - r0
+    cc0 = c0_c - c0
+    cr1 = cr0 + (r1 - r0_c)
+    cc1 = cc0 + (c1 - c0_c)
+    content_slice = content[cr0:cr1, cc0:cc1]
+    mask_slice = content_mask[cr0:cr1, cc0:cc1]
+    region = cost[r0_c:r1, c0_c:c1]
+    if condition_fn is not None:
+        mask = condition_fn(region, content_slice) & mask_slice
+    else:
+        mask = mask_slice
+    region[mask] = content_slice[mask]
+
+
+def get_damping_raster(region: kdb.Region, bbox: kdb.Box,
+                       resolution_dbu: int, safe_distance_dbu: int,
+                       hardness: float,
+                       n_steps: int) -> tuple[int, int, np.ndarray]:
+    """Build a graduated cost raster around a region.
+
+    Creates n_steps concentric expansions of the region. Each expansion
+    adds hardness // n_steps to the cost. Result: cost ramps from 0 at
+    safe_distance to hardness at the region boundary.
+
+    Returns (r0, c0, damping) where (r0, c0) is the grid offset of the
+    raster's top-left corner relative to the full cost grid (whose origin
+    is bbox.left, bbox.bottom). The raster covers only the bounding box
+    of the sized union for performance.
+    """
+    if n_steps <= 0 or safe_distance_dbu <= 0:
+        return 0, 0, np.zeros((0, 0), dtype=np.float64)
+
+    union = region.dup()
+    for i in range(n_steps):
+        sized = region.sized(int(safe_distance_dbu * (i + 1) / n_steps))
+        union += sized
+
+    # Clip to routing bbox
+    union = union & bbox
+
+    if union.is_empty():
+        return 0, 0, np.zeros((0, 0), dtype=np.float64)
+
+    union_bbox = union.bbox()
+    # Snap origin to align with the full cost grid's pixel boundaries.
+    # This avoids partial-coverage rounding errors at damping field edges.
+    origin_x = bbox.left + ((union_bbox.left - bbox.left) // resolution_dbu) * resolution_dbu
+    origin_y = bbox.bottom + ((union_bbox.bottom - bbox.bottom) // resolution_dbu) * resolution_dbu
+    origin = kdb.Point(origin_x, origin_y)
+    # Compute extent to cover the union bbox from the snapped origin
+    extent_x = union_bbox.right - origin_x
+    extent_y = union_bbox.top - origin_y
+    step = kdb.Vector(resolution_dbu, resolution_dbu)
+    ncols = max(1, (extent_x + resolution_dbu - 1) // resolution_dbu)
+    nrows = max(1, (extent_y + resolution_dbu - 1) // resolution_dbu)
+
+    raster_raw = np.array(union.rasterize(origin, step, ncols, nrows))
+    # Normalize: each concentric layer contributes hardness // n_steps
+    step_cost = hardness // n_steps if n_steps > 0 else hardness
+    damping = (raster_raw // (resolution_dbu * resolution_dbu)) * step_cost
+    damping = damping.astype(np.float64)
+
+    # Grid offset: where this raster sits in the full cost grid
+    r0 = (origin_y - bbox.bottom) // resolution_dbu
+    c0 = (origin_x - bbox.left) // resolution_dbu
+    return r0, c0, damping
+
+
 # ---------------------------------------------------------------------------
 # Cost grid construction
 # ---------------------------------------------------------------------------
@@ -226,6 +320,38 @@ def add_path_damping(cost: np.ndarray, path_pixels: list[tuple[int, int]],
                 if dist <= radius and not np.isinf(cost[rr, cc]):
                     factor = 5.0 * (1.0 - dist / radius)
                     cost[rr, cc] += max(0.0, factor)
+
+
+def build_cost_grid_graduated(obstacle_grid: np.ndarray,
+                              obs_region: kdb.Region,
+                              bbox: kdb.Box,
+                              resolution_dbu: int,
+                              obs_hardness: float,
+                              obs_damping_step: int,
+                              obs_safe_dbu: int) -> np.ndarray:
+    """Build a float cost grid with graduated damping around obstacles.
+
+    Obstacle cells get cost -1 (impassable via MCP_Geometric negative-cost
+    convention). Cells near obstacles get stepped damping cost that
+    increases toward the obstacle boundary.
+    """
+    nrows, ncols = obstacle_grid.shape
+    cost = np.ones((nrows, ncols), dtype=np.float64)
+
+    # Mark obstacles as impassable
+    cost[obstacle_grid] = -1.0
+
+    # Add graduated damping around obstacles
+    if obs_damping_step > 0 and obs_safe_dbu > 0:
+        r0, c0, damping = get_damping_raster(
+            obs_region, bbox, resolution_dbu, obs_safe_dbu,
+            obs_hardness, obs_damping_step)
+        if damping.size > 0:
+            conditional_overwrite(
+                cost, damping, damping > 0, r0, c0,
+                condition_fn=lambda existing, new: existing >= 0)
+
+    return cost
 
 
 # ---------------------------------------------------------------------------
