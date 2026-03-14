@@ -363,6 +363,7 @@ def find_path(cost: np.ndarray, start: tuple[int, int],
     """Find minimum-cost path using MCP_Geometric (Dijkstra on grid).
 
     Returns list of (row, col) or None if no path found.
+    Uses negative-sentinel convention: cost < 0 means impassable.
     """
     # Clamp to grid bounds
     nrows, ncols = cost.shape
@@ -371,12 +372,14 @@ def find_path(cost: np.ndarray, start: tuple[int, int],
     er = max(0, min(end[0], nrows - 1))
     ec = max(0, min(end[1], ncols - 1))
 
-    # If start or end is blocked, clear it temporarily
+    # If start or end is blocked, clear it temporarily.
+    # Defensive guard: MCP_Geometric produces silently wrong results
+    # when started on a negative-cost cell.
     orig_start = cost[sr, sc]
     orig_end = cost[er, ec]
-    if np.isinf(cost[sr, sc]):
+    if cost[sr, sc] < 0:
         cost[sr, sc] = 1.0
-    if np.isinf(cost[er, ec]):
+    if cost[er, ec] < 0:
         cost[er, ec] = 1.0
 
     try:
