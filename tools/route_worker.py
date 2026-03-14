@@ -97,47 +97,6 @@ def build_obstacle_region(cell: kdb.Cell, layout: kdb.Layout,
     return region
 
 
-def rasterize_region(region: kdb.Region, bbox: kdb.Box,
-                     resolution_dbu: int) -> np.ndarray:
-    """Rasterize a kdb.Region into a 2D boolean numpy array.
-
-    Each grid cell is True if any region polygon contains the cell center.
-    Grid axes: row = y (bottom-to-top mapped to 0..nrows-1), col = x.
-    Uses matplotlib.path.Path.contains_points for vectorized point-in-polygon.
-    """
-    from matplotlib.path import Path as MplPath
-
-    x_min, y_min = bbox.left, bbox.bottom
-    x_max, y_max = bbox.right, bbox.top
-
-    ncols = max(1, (x_max - x_min + resolution_dbu - 1) // resolution_dbu)
-    nrows = max(1, (y_max - y_min + resolution_dbu - 1) // resolution_dbu)
-
-    grid = np.zeros((nrows, ncols), dtype=bool)
-
-    # Build grid of all point coordinates
-    cols = np.arange(ncols)
-    rows = np.arange(nrows)
-    cc, rr = np.meshgrid(cols, rows)
-    xs = x_min + cc * resolution_dbu + resolution_dbu // 2
-    ys = y_min + rr * resolution_dbu + resolution_dbu // 2
-    points = np.column_stack([xs.ravel(), ys.ravel()])
-
-    # For each polygon in the merged region, mark contained grid cells
-    for polygon in region.each_merged():
-        hull = polygon.to_simple_polygon()
-        n = hull.num_points()
-        if n < 3:
-            continue
-        verts = [(hull.point(i).x, hull.point(i).y) for i in range(n)]
-        verts.append(verts[0])  # close polygon
-        path = MplPath(verts)
-        inside = path.contains_points(points)
-        grid |= inside.reshape(nrows, ncols)
-
-    return grid
-
-
 def rasterize_region_kdb(region: kdb.Region, bbox: kdb.Box,
                          resolution_dbu: int) -> np.ndarray:
     """Rasterize a kdb.Region into a 2D boolean numpy array using KLayout's native rasterizer.
@@ -269,58 +228,6 @@ def get_damping_raster(region: kdb.Region, bbox: kdb.Box,
 # ---------------------------------------------------------------------------
 # Cost grid construction
 # ---------------------------------------------------------------------------
-
-def build_cost_grid(obstacle_grid: np.ndarray,
-                    obs_damping_pixels: int) -> np.ndarray:
-    """Build a float cost grid from boolean obstacle grid.
-
-    Obstacle cells get infinite cost. Cells near obstacles get graduated
-    damping cost that decays with distance.
-    """
-    nrows, ncols = obstacle_grid.shape
-    cost = np.ones((nrows, ncols), dtype=np.float64)
-
-    # Block obstacles
-    cost[obstacle_grid] = np.inf
-
-    # Add graduated damping near obstacles using distance transform
-    if obs_damping_pixels > 0:
-        from scipy.ndimage import distance_transform_edt
-        # Distance from each free cell to nearest obstacle
-        free = ~obstacle_grid
-        dist = distance_transform_edt(free)
-        # Damping: high cost near obstacles, decaying to 0
-        damping_mask = (dist > 0) & (dist <= obs_damping_pixels)
-        # Cost factor: 10 at obstacle edge, decaying linearly
-        damping = np.where(damping_mask,
-                           10.0 * (1.0 - dist / obs_damping_pixels),
-                           0.0)
-        cost += damping
-
-    return cost
-
-
-def add_path_damping(cost: np.ndarray, path_pixels: list[tuple[int, int]],
-                     damping_pixels: int, path_width_pixels: int) -> None:
-    """Add damping cost around a routed path to keep subsequent routes separated."""
-    if damping_pixels <= 0 or not path_pixels:
-        return
-
-    nrows, ncols = cost.shape
-    radius = damping_pixels + path_width_pixels
-
-    for r, c in path_pixels:
-        r_lo = max(0, r - radius)
-        r_hi = min(nrows, r + radius + 1)
-        c_lo = max(0, c - radius)
-        c_hi = min(ncols, c + radius + 1)
-        for rr in range(r_lo, r_hi):
-            for cc in range(c_lo, c_hi):
-                dist = math.sqrt((rr - r) ** 2 + (cc - c) ** 2)
-                if dist <= radius and not np.isinf(cost[rr, cc]):
-                    factor = 5.0 * (1.0 - dist / radius)
-                    cost[rr, cc] += max(0.0, factor)
-
 
 def build_cost_grid_graduated(obstacle_grid: np.ndarray,
                               obs_region: kdb.Region,
