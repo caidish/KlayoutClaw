@@ -156,6 +156,20 @@ Runs routing computation in a subprocess (`tools/route_worker.py`) using numpy, 
 | `conda_env` | string | no | "instrMCPdev" | Conda env with routing deps |
 | `python_path` | string | no | | Path to python binary (overrides conda_env) |
 
+**Advanced tuning parameters** (passed through to `route_worker.py` config JSON — not exposed in MCP tool schema, but can be added to the config directly):
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `obs_hardness` | number | 20.0 | Max cost at obstacle boundary (higher = paths stay further) |
+| `obs_damping_step` | int | 4 | Gradient steps for obstacle avoidance field |
+| `pin_safe_distance_a_um` | number | 5.0 | Avoidance halo radius around Pin A shapes (um) |
+| `pin_safe_distance_b_um` | number | 5.0 | Avoidance halo radius around Pin B shapes (um) |
+| `pin_hardness` | number | 20.0 | Max cost at pin halo boundary |
+| `pin_damping_step` | int | 4 | Gradient steps for pin avoidance fields |
+| `path_hardness` | number | 10.0 | Max cost near previously routed paths |
+| `path_damping_step` | int | 5 | Gradient steps for path avoidance fields |
+| `sort_pairs` | bool | true | Route shortest pairs first (improves success rate) |
+
 **Returns:**
 ```json
 {
@@ -172,10 +186,12 @@ Runs routing computation in a subprocess (`tools/route_worker.py`) using numpy, 
 **Algorithm:**
 1. Save current layout to temp GDS
 2. Extract pin centers from shapes on pin_layer_a and pin_layer_b
-3. Build obstacle region from obstacle_layers, expanded by obs_safe_distance
-4. Rasterize obstacles into a 2D cost grid (resolution = map_resolution)
-5. Hungarian matching (scipy) finds optimal pin pairings
-6. MCP_Geometric (scikit-image) finds minimum-cost paths on the grid
-7. Paths compressed (collinear points removed) and inserted as pya.Path objects
+3. Build obstacle region from obstacle_layers (raw shapes, no pre-expansion)
+4. Rasterize obstacles into a 2D cost grid using `kdb.Region.rasterize()` (resolution = map_resolution)
+5. Apply graduated damping fields around obstacles (stepped cost gradient within obs_safe_distance)
+6. Mark all pins as impassable with their own damping halos (asymmetric per pin set)
+7. Hungarian matching (scipy) finds optimal pin pairings, sorted by distance (shortest first)
+8. For each pair: temporarily recover pin cells, find minimum-cost path via MCP_Geometric (scikit-image), mark path as impassable with damping, re-block pins
+9. Paths compressed (collinear points removed) and inserted as pya.Path objects
 
 **Dependencies (subprocess):** numpy, scipy, scikit-image, klayout (standalone package)
