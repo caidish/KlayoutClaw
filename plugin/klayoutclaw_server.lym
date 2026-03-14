@@ -221,7 +221,12 @@ TOOLS = [
                 "path_safe_distance": {"type": "number", "description": "Min distance between paths in microns", "default": 5.0},
                 "map_resolution": {"type": "number", "description": "Grid resolution in microns", "default": 2.0},
                 "conda_env": {"type": "string", "description": "Conda env with routing deps", "default": "instrMCPdev"},
-                "python_path": {"type": "string", "description": "Path to python with routing deps (overrides conda_env)"}
+                "python_path": {"type": "string", "description": "Path to python with routing deps (overrides conda_env)"},
+                "obs_hardness": {"type": "number", "description": "Max cost at obstacle boundary (higher = paths stay further away)", "default": 20.0},
+                "pin_safe_distance_a": {"type": "number", "description": "Avoidance halo around Pin A shapes in microns", "default": 5.0},
+                "pin_safe_distance_b": {"type": "number", "description": "Avoidance halo around Pin B shapes in microns", "default": 5.0},
+                "path_hardness": {"type": "number", "description": "Max cost near previously routed paths (higher = more spacing)", "default": 10.0},
+                "sort_pairs": {"type": "boolean", "description": "Route shortest pairs first (improves success rate)", "default": True}
             },
             "required": ["pin_layer_a", "pin_layer_b"]
         }
@@ -421,6 +426,11 @@ def _tool_auto_route(args):
     map_resolution = args.get("map_resolution", 2.0)
     conda_env = args.get("conda_env", "instrMCPdev")
     python_path = args.get("python_path", None)
+    obs_hardness = args.get("obs_hardness", 20.0)
+    pin_safe_distance_a = args.get("pin_safe_distance_a", 5.0)
+    pin_safe_distance_b = args.get("pin_safe_distance_b", 5.0)
+    path_hardness = args.get("path_hardness", 10.0)
+    sort_pairs = args.get("sort_pairs", True)
 
     # Save current layout to temp GDS
     tmp_dir = tempfile.mkdtemp(prefix="klayoutclaw_route_")
@@ -447,6 +457,11 @@ def _tool_auto_route(args):
         "obs_safe_distance_um": obs_safe_distance,
         "path_safe_distance_um": path_safe_distance,
         "map_resolution_um": map_resolution,
+        "obs_hardness": obs_hardness,
+        "pin_safe_distance_a_um": pin_safe_distance_a,
+        "pin_safe_distance_b_um": pin_safe_distance_b,
+        "path_hardness": path_hardness,
+        "sort_pairs": sort_pairs,
     }
     with open(config_json, "w") as f:
         json.dump(config, f)
