@@ -8,7 +8,7 @@ MCP server plugin for KLayout — connect your agent harness (Claude Code, Codex
 
 Built for device physicists working on 2D material devices, superconducting qubits, photonics, and other micro/nanofabricated systems.
 
-> **macOS only** for now. Linux/Windows support is planned but untested.
+> **macOS only** for now. Linux/Windows support is planned but untested. We need more help with Windows/Linux Native user and more benchmark test. 
 
 ![Demo](docs/demo.gif)
 
