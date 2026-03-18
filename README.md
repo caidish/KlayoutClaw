@@ -12,16 +12,11 @@ Built for device physicists working on 2D material devices, superconducting qubi
 
 ![Demo](docs/demo.gif)
 
-### ML08 Nanodevice Demo
+### Real Sample Nanodevice Demo
 
-Full nanodevice fabrication pipeline on a real van der Waals heterostructure sample: load a GDS template, overlay flake detection results from the `flakedetect` and `gdsalign` pipelines, generate a self-adjusting Hall bar (thin voltage arms, L-shaped current leads, channel-only TopGate), and route 11 pins to bonding pads using multi-window EBL routing (0.5 um inner / 2.0 um outer resolution).
+Full nanodevice fabrication pipeline on a real van der Waals heterostructure sample: load a GDS template, overlay flake detection results from the `flakedetect` and `gdsalign` pipelines, generate a 8 pin Hall bar, and route 11 pins to bonding pads using multi-window routing.
 
-![ML08 Demo](docs/ml08_demo.gif)
-
-```bash
-# Requires KLayout running with KlayoutClaw plugin
-python tools/capture_ml08_demo.py [output.gif]
-```
+![Real Sample Demo](docs/ml08_demo.gif)
 
 ## What's Inside
 
@@ -202,7 +197,7 @@ KlayoutClaw/
 ├── tools/
 │   ├── gds_to_image.py           # GDS → PNG converter (gdstk + matplotlib)
 │   ├── capture_demo.py           # Simple Hall bar demo capture script
-│   ├── capture_ml08_demo.py      # ML08 nanodevice demo (multi-window routing)
+│   ├── capture_ml08_demo.py      # ML08 nanodevice demo
 │   └── route_worker.py           # Subprocess routing engine
 ├── tests/
 │   ├── test_connection.py        # Protocol-level MCP test
@@ -219,8 +214,6 @@ KlayoutClaw/
 ├── tests_resources/              # Test fixtures
 │   ├── graphene_for_test.jpg     # Graphene microscope image
 │   └── ml08/                     # ML08 sample data
-│       ├── Template.gds          # GDS lithography template
-│       └── precomputed/          # flakedetect + gdsalign pipeline outputs
 ├── docs/
 │   ├── tools.md                  # MCP tool reference (6 tools)
 │   ├── skills.md                 # Skills reference (7 skills)
