@@ -22,7 +22,7 @@ You need these before dispatching any subagent:
    - `full_stack_lut` — (optional) color-enhanced version of full_stack
 2. **Pixel size** — microns per pixel (e.g., 0.087 for 100x objective). Ask the user or check the image metadata.
 3. **Mirror** — Does the top_part need mirroring? Yes if it was transferred from PDMS (the transfer flips it horizontally). Ask the user if unsure.
-4. **Output directory** — Where to write results. A good default: `<image_dir>/output/`
+4. **Output directory** — Where to write results. **If the user does not specify an output path, default to `<stack_image_dir>/output/`** (the directory containing the source images). Never use `/tmp` as the default output.
 
 ### Set up the output directory
 
