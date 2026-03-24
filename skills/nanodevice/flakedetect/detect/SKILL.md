@@ -20,7 +20,7 @@ Graphite and graphene use a **two-pass candidate workflow**: first run auto-sele
 
 ## Agent Workflow
 
-All 4 scripts are independent — run them in any order (or parallel). Then review and assemble.
+All 4 scripts are independent — run them in any order (or parallel, to save time). Each script takes 30-60 seconds. Then review and assemble.
 
 ```
 1. Run graphite.py on bottom_part
@@ -46,7 +46,7 @@ All 4 scripts are independent — run them in any order (or parallel). Then revi
 
 **Method**: Isolates the hBN flake via HSV thresholding, then K-means sub-clusters (default 4) within the flake in LAB color space. Auto-selects the darkest sub-cluster.
 
-**Key insight**: The graphite strip is typically the **2nd darkest** sub-cluster, NOT the absolute darkest. The darkest cluster is usually edge artifacts, folds, or shadow regions. Always review the candidates.
+**Key insight**: The graphite strip is typically the **2nd darkest** sub-cluster, NOT the absolute darkest. The darkest cluster is usually edge artifacts, folds, or shadow regions. Always review the candidates. In benchmark testing, the auto-selected cluster was wrong in 4/5 datasets — expect to override with `--cluster-id` after reviewing `00_graphite_candidates.png`.
 
 ### What to look for in 00_graphite_candidates.png
 

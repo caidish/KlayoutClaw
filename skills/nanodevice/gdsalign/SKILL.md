@@ -64,6 +64,8 @@ Renders marker-pair templates from `gds_markers.json`, then runs multi-method te
 
 **Outputs**: `image_markers.json`, `01_template.png`, `03_detections.png`
 
+**Verification**: After running, view `03_detections.png`. The 4 detected markers (colored circles) should form a roughly square pattern, ~300-400 um apart (a few thousand pixels at 0.087 um/px), centered in the image near the flake region. The `pixel_size` parameter is critical for correct template rendering — use the value specified in the task instructions (typically 0.087 um/px). If detections look wrong (markers on image edges, or only 2-3 found), check that pixel_size matches the actual microscope magnification.
+
 ### align_gds.py
 
 ```bash

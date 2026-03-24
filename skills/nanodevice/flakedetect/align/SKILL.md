@@ -30,10 +30,21 @@ Runs **fully autonomously** except for one mandatory pause: **rotation selection
    └─ Cross-substrate? → Continue to step 2
 
 2. Run source_contour.py [--mirror]
-   → Check: Does the contour in 01_source_contour.png trace the flake?
+   → View 01_source_contour.png: contour must trace the full flake boundary.
 
 3. Run footprint.py [--mirror]
-   → Check: Does 04_footprint_grabcut.png match the flake shape from step 2?
+   → *** CRITICAL: Verify footprint before proceeding ***
+   → View 03_footprint_candidates.png — it shows multiple candidates side by side.
+   → Compare EACH candidate against the source contour shape from step 2.
+   → The default candidate (#1) is often WRONG — it may grab debris/satellite
+     flakes instead of the PDMS stamp. Candidates #2 or #3 are often better.
+   → If 04_footprint_grabcut.png does NOT match the source flake shape:
+     Re-run with --candidate-rank 2 (or 3). Do NOT proceed with a bad footprint.
+   → **Do NOT rely on shape_distance alone to pick candidates.** A candidate with
+     slightly worse shape_distance may produce much better IoU after sweep+refine
+     because the sweep optimizes position, rotation, AND scale. When all candidates
+     have shape_distance > 0.5 (none clearly good), run sweep+refine on at least
+     the top 2 candidates and compare final IoU.
 
 4. Run sweep.py
    → Produces candidate overlay images
@@ -44,10 +55,34 @@ Runs **fully autonomously** except for one mandatory pause: **rotation selection
    IGNORE cost ranking — the lowest cost is often wrong.
 
 6. Run refine.py --rot-hint <degrees>
+   → **Runtime**: refine.py takes 10-15 minutes on 2-CPU machines (differential
+     evolution optimizer).
+     **MANDATORY EXECUTION METHOD**: Run refine.py as a FOREGROUND BLOCKING
+     command with a long timeout. Use the Bash tool with timeout=1200000
+     (20 minutes). Example:
+       Bash(command="conda run -n base python .../refine.py ...", timeout=1200000)
+     Do NOT use run_in_background=true. Do NOT launch it as a background
+     process with &. Do NOT poll with sleep loops. Do NOT check for output
+     files in a loop. Just run the single blocking command and wait for it
+     to return. The Bash tool will hold until the process exits or the
+     timeout is reached.
    → Check metrics against acceptance thresholds (see below)
    → If accepted: DONE. warp_top.npy is ready.
-   → If rejected: see "Adjusting Parameters" below.
+   → If FAILED: Go to step 7.
+
+7. *** RETRY LOOP (max 2 retries) ***
+   NEVER retry refine.py with the same footprint. Fix the INPUT first.
+
+   Retry 1: Re-run footprint.py with --candidate-rank 2
+            → then sweep.py → select rotation → refine.py
+
+   Retry 2: Re-run footprint.py with --candidate-rank 3 or --n-clusters 24
+            → then sweep.py → select rotation → refine.py
+
+   If still failing after 2 retries → STOP. Report failure.
 ```
+
+> **IMPORTANT**: Never retry refine.py more than once with the same footprint. If refine fails, the problem is the footprint or rotation selection, not refine's optimizer. Go back to step 3 and try a different `--candidate-rank`.
 
 ---
 
@@ -90,8 +125,9 @@ This is the core skill — reading diagnostic outputs and knowing which knob to 
 | What you see in diagnostics | What's wrong | Action |
 |-----------------------------|-------------|--------|
 | 04_footprint_grabcut.png matches source flake shape | Nothing | Proceed |
+| Footprint grabs entire flake assembly + debris/satellite flakes | Default candidate (#1) picked up too much | **Re-run with `--candidate-rank 2`** (or 3). Always check `03_footprint_candidates.png` first — a better candidate likely exists |
 | Footprint too large (includes bottom hBN) | Wrong clusters selected | Re-run with `--n-clusters 20`, `--n-clusters 24` for finer segmentation |
-| Footprint too small (misses edges) | GrabCut too aggressive | Check 03_footprint_candidates.png — the #2 or #3 candidate may be better |
+| Footprint too small (misses edges) | GrabCut too aggressive | Re-run with `--candidate-rank 2` or `--candidate-rank 3` |
 | Footprint is completely wrong shape | Shape matching failed | The source and target may look too different; check if `--mirror` is correct |
 | shape_distance > 0.5 in stdout | Poor shape match | Continue anyway — GrabCut may still produce a usable footprint |
 
@@ -118,17 +154,17 @@ This is the core skill — reading diagnostic outputs and knowing which knob to 
 
 ### Retry Strategy
 
+> **Rule**: NEVER retry refine.py with the same footprint. If refine fails, fix the footprint first.
+> **Time budget**: Each refine.py attempt takes 10-15 min. Budget max 2 full attempts (footprint→sweep→refine). If 2 attempts fail and the best IoU is above 0.5, accept it and proceed — an imperfect alignment that lets you complete the pipeline is better than a perfect alignment that times out.
+> **Execution reminder**: ALWAYS run refine.py as a foreground blocking Bash command with timeout=1200000. NEVER use run_in_background or sleep/poll loops.
+
 ```
-Attempt 1: Run full pipeline with best sweep candidate
-  → If FAIL on rotation metrics (outside_frac, containment):
-Attempt 2: Re-run refine.py with 2nd-best sweep candidate rotation
-  → If FAIL on scale metrics (IoU, chamfer):
-Attempt 3: Re-run refine.py with --scale-hint from attempt 1's result ±0.1
-  → If still FAIL:
-Attempt 4: Re-run footprint.py with --n-clusters 10, then full pipeline
-  → If still FAIL:
-STOP: Report failure with diagnostic images for human review
-Max attempts: 4
+Attempt 1: footprint (default) → sweep → select rotation → refine
+  → If refine FAILS (IoU < 0.50):
+Attempt 2: footprint --candidate-rank 2 → sweep → select rotation → refine
+  → If still FAILS (IoU < 0.50):
+Accept the best result from attempts 1-2 and proceed. Do NOT run a 3rd refine.
+Max refine.py invocations: 2. Each takes 10-15 min — 3 would consume 45 min.
 ```
 
 ---
@@ -175,6 +211,7 @@ conda run -n base python skills/nanodevice/flakedetect/align/scripts/footprint.p
 Optional:
 - `--source-contour` + `--source-mask` — use pre-computed contour/mask from source_contour.py instead of re-segmenting internally. **Recommended**: ensures footprint uses the same source shape as sweep/refine.
 - `--n-clusters 16` (default; increase to 24 for finer segmentation on retry)
+- `--candidate-rank N` — use the Nth-ranked candidate instead of the default (#1). **Always check `03_footprint_candidates.png`** — candidate #1 is often wrong. Try `--candidate-rank 2` or `--candidate-rank 3` on retry.
 
 **Outputs**: `footprint_mask.png`, `footprint_contour.npy`, `02_cluster_map.png`, `03_footprint_candidates.png`, `04_footprint_grabcut.png`, updates `alignment_report.json`
 

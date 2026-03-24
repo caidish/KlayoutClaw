@@ -105,3 +105,42 @@ Clears all shapes from the listed layers. Useful for re-routing without losing d
 
 - Auto-router may produce overlapping routes in dense fan-out scenarios (48+ pins from a small cluster)
 - Workaround: increase `path_safe_distance`, or manually adjust problem routes via execute_script
+
+## auto_route Environment
+
+The `auto_route` MCP tool runs a subprocess on the **host machine** (KLayout runs on the host, not inside the container). By default it activates conda env `instrMCPdev` via `~/miniforge3/etc/profile.d/conda.sh`. This fails if the host uses a different conda distribution (e.g., `anaconda3`).
+
+**Workaround**: Pass the `python_path` parameter to bypass conda activation entirely. To discover the correct path, use `execute_script` (which also runs on the host):
+
+```python
+import glob, os
+candidates = glob.glob(os.path.expanduser("~/anaconda3/envs/instrMCPdev/bin/python3")) + \
+             glob.glob(os.path.expanduser("~/miniforge3/envs/instrMCPdev/bin/python3"))
+result = candidates[0] if candidates else "instrMCPdev env not found"
+```
+
+Then pass the discovered path as `python_path` in your `auto_route` call.
+
+## Manual Route Fallback
+
+When `auto_route` fails for individual pin pairs (reports "No path found"), create manual L-shaped routes via `execute_script`:
+
+```python
+top_cell = _layout.top_cell()
+li_route = _layout.layer(3, 0)  # or your route layer
+
+# Create an L-shaped path from contact to pad
+x1, y1 = 766.0, 811.4  # contact center (um)
+x2, y2 = 928.0, 1825.0  # pad center (um)
+mid_x = x2  # route goes horizontal then vertical
+width = 1.0  # path width in um
+
+path = pya.DPath([
+    pya.DPoint(x1, y1),
+    pya.DPoint(mid_x, y1),  # horizontal segment
+    pya.DPoint(mid_x, y2),  # vertical segment to pad
+], width / _layout.dbu)
+top_cell.shapes(li_route).insert(path)
+```
+
+Use this for any pairs that `auto_route` couldn't connect. Check the auto_route result for `failed_pairs` to identify which contacts need manual routing.
