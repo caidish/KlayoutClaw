@@ -1,0 +1,56 @@
+version: 1
+
+tools:
+  # Notebook cell manipulation (requires instrMCP)
+  notebook_read_active_cell:
+    title: "Read Active Cell"
+    description: "Read the content of the currently active cell in JupyterLab."
+  notebook_read_active_cell_output:
+    title: "Read Cell Output"
+    description: "Read the output of the currently active cell."
+  notebook_execute_active_cell:
+    title: "Execute Active Cell"
+    description: "Execute the currently active cell in JupyterLab."
+  notebook_add_cell:
+    title: "Add Cell"
+    description: "Add a new code or markdown cell to the notebook."
+  notebook_delete_cell:
+    title: "Delete Cell"
+    description: "Delete cell(s) from the notebook."
+  notebook_apply_patch:
+    title: "Edit Cell"
+    description: "Edit the active cell by text replacement."
+  notebook_move_cursor:
+    title: "Move Cursor"
+    description: "Navigate between cells."
+
+  # Namespace queries
+  qiskit_list_circuits:
+    title: "List Circuits"
+    description: "List QuantumCircuit objects in the namespace."
+  qiskit_circuit_info:
+    title: "Circuit Info"
+    description: "Inspect a specific QuantumCircuit."
+  qiskit_list_backends:
+    title: "List Backends"
+    description: "List available Qiskit simulator backends."
+  qiskit_list_variables:
+    title: "List Variables"
+    description: "List variables in the Jupyter kernel namespace."
+  qiskit_read_variable:
+    title: "Read Variable"
+    description: "Read a specific variable from the namespace."
+
+resources:
+  qiskit_transmon_guide:
+    title: "Transmon Simulation Guide"
+    description: "scqubits usage with code examples"
+  qiskit_noise_channels:
+    title: "Noise Modeling Guide"
+    description: "qiskit-aer noise modeling with code examples"
+  qiskit_metal_components:
+    title: "Qiskit Metal Guide"
+    description: "Qiskit Metal component catalog"
+  qiskit_circuit_patterns:
+    title: "Circuit Patterns"
+    description: "Common circuits (Bell, GHZ, QFT) with code examples"

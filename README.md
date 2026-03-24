@@ -225,6 +225,18 @@ KlayoutClaw/
 └── pyproject.toml                # pytest configuration
 ```
 
+## Qiskit Quantum Simulation (Experimental)
+
+KlayoutClaw can be paired with a **Qiskit MCP server** for quantum device simulation. The agent reads transmon geometry from KLayout, writes simulation code (scqubits, qiskit-aer) in JupyterLab notebook cells, and verifies device physics -- all visible in the notebook.
+
+```
+Claude Code ──┬── KLayout MCP (8765)    layout geometry
+              ├── instrMCP (8123)        notebook cell manipulation
+              └── Qiskit MCP (8124)      namespace queries + resources
+```
+
+See **[docs/qiskit_mcp.md](docs/qiskit_mcp.md)** for full setup, tool reference, and testing instructions.
+
 ## Architecture
 
 - **`pya.QTcpServer`** on Qt main thread -- no Python threads, no GIL issues

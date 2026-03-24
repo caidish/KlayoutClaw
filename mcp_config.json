@@ -3,5 +3,10 @@
     "type": "http",
     "url": "http://127.0.0.1:8765/mcp",
     "authorization": "none"
+  },
+  "qiskit": {
+    "type": "http",
+    "url": "http://127.0.0.1:8124/mcp",
+    "authorization": "none"
   }
 }
