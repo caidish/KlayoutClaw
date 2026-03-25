@@ -165,7 +165,7 @@ TOOLS = [
     },
     {
         "name": "execute_script",
-        "description": "Execute arbitrary Python/pya code in KLayout. The namespace includes: pya, json, os, _layout, _layout_view, _top_cell, _get_or_create_view(), _refresh_view(). Set the variable 'result' to return data (will be serialized as JSON). The view is refreshed automatically after execution.",
+        "description": "Execute arbitrary Python/pya code in KLayout. The namespace includes: pya, json, os, _layout, _layout_view, _top_cell, _get_or_create_view() (returns tuple: _layout_view, _layout, _top_cell), _refresh_view(). Set the variable 'result' to return data (will be serialized as JSON). The view is refreshed automatically after execution.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -261,6 +261,7 @@ def _refresh_view():
     if _layout_view is None or _layout is None:
         return
     fallback_idx = 0
+    layers_added = False
     for li in _layout.layer_indices():
         info = _layout.get_info(li)
         key = (info.layer, info.datatype)
@@ -289,7 +290,9 @@ def _refresh_view():
                 lp.transparent = True
                 fallback_idx += 1
             _layout_view.insert_layer(lp_iter, lp)
-    _layout_view.zoom_fit()
+            layers_added = True
+    if layers_added:
+        _layout_view.zoom_fit()
 
 
 # ---------------------------------------------------------------------------
