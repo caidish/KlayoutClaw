@@ -249,6 +249,9 @@ def main():
 
     warped_path = os.path.join(args.output_dir, "full_stack_gds.png")
 
+    # Horizontal flip to match KLayout coordinate convention (image X vs GDS X)
+    warped = cv2.flip(warped, 1)
+
     # Use lossless PNG for quality
     cv2.imwrite(warped_path, warped)
     print(f"Saved {warped_path} ({out_w}x{out_h} px)")
@@ -333,10 +336,12 @@ img = pya.Image(filepath)
 img.visible = True
 
 ps = {out_pixel_size}
-x_off = {x_origin}
-y_off = {y_origin}
+# 180 deg rotation pivots around displacement point, so offset by image extent
+# to keep the image in the same bounding box
+x_off = {x_origin} + {placement["width_um"]}
+y_off = {y_origin} + {placement["height_um"]}
 
-img.trans = pya.DCplxTrans(ps, 0, False, pya.DVector(x_off, y_off))
+img.trans = pya.DCplxTrans(ps, 180, False, pya.DVector(x_off, y_off))
 view.insert_image(img)
 
 result = {{"status": "ok", "id": img.id()}}
@@ -358,16 +363,18 @@ result = {{"status": "ok", "id": img.id()}}
             pts = entry["contour_gds"]
             if len(pts) < 3:
                 continue
-            # Build points list for pya
+            # Build points list for pya — closed path (border only)
+            closed_pts = pts + [pts[0]]  # close the contour
             pts_code = ", ".join(
-                f"pya.Point(int({x}/dbu), int({y}/dbu))" for x, y in pts
+                f"pya.Point(int({x}/dbu), int({y}/dbu))"
+                for x, y in closed_pts
             )
             execute_script(f"""
 view, layout, cell = _get_or_create_view()
 dbu = layout.dbu
 li = layout.layer({layer}, {dt})
 pts = [{pts_code}]
-cell.shapes(li).insert(pya.Polygon(pts))
+cell.shapes(li).insert(pya.Path(pts, int(0.2/dbu)))
 result = {{"status": "ok"}}
 """)
             n_inserted += 1

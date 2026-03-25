@@ -22,7 +22,7 @@ You need these before dispatching any subagent:
    - `full_stack_lut` — (optional) color-enhanced version of full_stack
 2. **Pixel size** — microns per pixel (e.g., 0.087 for 100x objective). Ask the user or check the image metadata.
 3. **Mirror** — Does the top_part need mirroring? Yes if it was transferred from PDMS (the transfer flips it horizontally). Ask the user if unsure.
-4. **Output directory** — Where to write results. A good default: `<image_dir>/output/`
+4. **Output directory** — Where to write results. **If the user does not specify an output path, default to `<stack_image_dir>/output/`** (the directory containing the source images). Never use `/tmp` as the default output.
 
 ### Set up the output directory
 
@@ -64,7 +64,7 @@ Commit and review don't write to disk — they use KLayout directly.
 > - pixel_size: `<value>` um/px
 > - output_dir: `<out>/align`
 
-**What the subagent does:** Runs SIFT for bottom_part, runs the full Chamfer pipeline (source_contour → footprint → sweep → pick rotation → refine) for top_part. Makes its own rotation selection decision by viewing candidate images.
+**What the subagent does:** Runs SIFT for bottom_part, runs the full Chamfer pipeline (source_contour → footprint → sweep → pick rotation → refine) for top_part. Makes its own rotation selection decision by viewing candidate images. **IMPORTANT**: refine.py takes 10-15 min — the subagent MUST run it as a foreground blocking Bash command with timeout=1200000. It must NOT use run_in_background or sleep/poll loops.
 
 **What it produces:** `warp_sift_bottom.npy`, `warp_top.npy`, `footprint_mask.png`, `footprint_contour.npy`, `alignment_report.json`
 
@@ -125,7 +125,7 @@ Commit and review don't write to disk — they use KLayout directly.
 > - full_stack_raw: `<path>` (for background image)
 > - pixel_size: `<value>` um/px
 
-**What the subagent does:** Creates a layout, loads the background image (using the `image` skill), reads traces.json, transforms coordinates, and adds polygons (using the `geometry` skill's `add_polygon.py`). Takes a screenshot to verify.
+**What the subagent does:** Loads the background image and adds polygons using `execute_script` (NOT `add_image.py` or `add_polygon.py` — those scripts use MCP client which doesn't work from Docker containers). Reads traces.json, transforms coordinates (image-origin → KLayout centered with Y-flip), and inserts polygons directly via pya API. Takes a screenshot to verify.
 
 **What it produces:** Polygons on layers 10/0-13/0 in KLayout, background image loaded.
 

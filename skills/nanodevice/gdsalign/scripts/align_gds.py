@@ -300,49 +300,64 @@ def main():
           f"tx={tx:.1f}, ty={ty:.1f}")
     print(f"Residuals: mean={mean_res:.3f} um, max={max_res:.3f} um")
 
-    # --- Disambiguate 180° ambiguity ---
-    # For marker patterns with 180° rotational symmetry (e.g., square grid),
-    # both θ and θ+180° reflected similarities yield identical residuals with
-    # permuted marker assignments.  Prefer M[0,0] > 0 (no horizontal flip),
-    # matching standard upright microscopy.
-    if is_reflected and M_refined[0, 0] < 0 and "grid_center_um" in gds_data:
+    # --- Disambiguate rotational symmetry ---
+    # For marker patterns with rotational symmetry (e.g., square grid),
+    # multiple rotation angles (θ, θ+90°, θ+180°, θ+270°) can yield similar
+    # residuals with permuted marker assignments.
+    # Prefer the solution with rotation closest to 0°.
+    if is_reflected and "grid_center_um" in gds_data:
         gds_center = np.array(gds_data["grid_center_um"])
-        M_comp = M_refined.copy()
-        M_comp[:2, :2] = -M_refined[:2, :2]
-        M_comp[0, 2] = 2 * gds_center[0] - M_refined[0, 2]
-        M_comp[1, 2] = 2 * gds_center[1] - M_refined[1, 2]
 
-        n_comp, avg_comp, corr_comp = _score_transform(
-            M_comp, img_pts, gds_pts, inlier_thresh=max_res * 3)
+        # Current solution is the first candidate
+        candidates = [(M_refined, theta, mean_res, max_res,
+                        correspondences, src_inlier, dst_inlier, residuals)]
 
-        if n_comp >= n_inliers:
-            src_comp = np.array([img_pts[ii] for ii, gi, _ in corr_comp])
-            dst_comp = np.array([gds_pts[gi] for ii, gi, _ in corr_comp])
-            M_comp = refine_similarity(
-                src_comp, dst_comp, M_comp, reflected=is_reflected)
-            trans_comp = apply_transform(M_comp, src_comp)
-            res_comp = np.sqrt(((trans_comp - dst_comp) ** 2).sum(axis=1))
-            mean_comp = float(res_comp.mean())
-            max_comp = float(res_comp.max())
+        for angle_deg in [90, 180, 270]:
+            angle_rad = math.radians(angle_deg)
+            c_r, s_r = math.cos(angle_rad), math.sin(angle_rad)
+            R = np.array([[c_r, -s_r], [s_r, c_r]])
 
-            if mean_comp <= mean_res * 2.0:
-                print(f"Resolved 180deg ambiguity: using non-flipped companion "
-                      f"(residual {mean_comp:.3f} vs {mean_res:.3f} um)")
-                M_refined = M_comp
-                correspondences = corr_comp
-                src_inlier = src_comp
-                dst_inlier = dst_comp
-                residuals = res_comp
-                mean_res = mean_comp
-                max_res = max_comp
-                # Re-extract transform parameters
-                a, b = M_refined[0, 0], M_refined[1, 0]
-                theta = math.atan2(b, a)
-                scale = math.sqrt(a**2 + b**2)
-                tx, ty = float(M_refined[0, 2]), float(M_refined[1, 2])
-                print(f"Companion: rot={math.degrees(theta):.1f} deg, "
-                      f"scale={scale:.4f}, tx={tx:.1f}, ty={ty:.1f}")
-                print(f"Residuals: mean={mean_res:.3f} um, max={max_res:.3f} um")
+            M_comp = np.zeros((2, 3))
+            M_comp[:2, :2] = R @ M_refined[:2, :2]
+            M_comp[:2, 2] = R @ (M_refined[:2, 2] - gds_center) + gds_center
+
+            n_comp, avg_comp, corr_comp = _score_transform(
+                M_comp, img_pts, gds_pts, inlier_thresh=max_res * 3)
+
+            if n_comp >= n_inliers:
+                src_comp = np.array([img_pts[ii] for ii, gi, _ in corr_comp])
+                dst_comp = np.array([gds_pts[gi] for ii, gi, _ in corr_comp])
+                M_comp_ref = refine_similarity(
+                    src_comp, dst_comp, M_comp, reflected=is_reflected)
+                trans_comp = apply_transform(M_comp_ref, src_comp)
+                res_comp = np.sqrt(
+                    ((trans_comp - dst_comp) ** 2).sum(axis=1))
+                mean_comp = float(res_comp.mean())
+                max_comp = float(res_comp.max())
+
+                if mean_comp <= mean_res * 2.0:
+                    a_c, b_c = M_comp_ref[0, 0], M_comp_ref[1, 0]
+                    theta_c = math.atan2(b_c, a_c)
+                    candidates.append((M_comp_ref, theta_c, mean_comp,
+                                       max_comp, corr_comp, src_comp,
+                                       dst_comp, res_comp))
+
+        # Pick the candidate with rotation closest to 0°
+        best_idx = min(range(len(candidates)),
+                       key=lambda i: abs(candidates[i][1]))
+
+        if best_idx > 0:
+            (M_refined, theta, mean_res, max_res, correspondences,
+             src_inlier, dst_inlier, residuals) = candidates[best_idx]
+            a, b = M_refined[0, 0], M_refined[1, 0]
+            scale = math.sqrt(a**2 + b**2)
+            tx, ty = float(M_refined[0, 2]), float(M_refined[1, 2])
+            print(f"Resolved rotational ambiguity: using "
+                  f"rot={math.degrees(theta):.1f} deg companion "
+                  f"(residual {mean_res:.3f} um)")
+            print(f"Companion: rot={math.degrees(theta):.1f} deg, "
+                  f"scale={scale:.4f}, tx={tx:.1f}, ty={ty:.1f}")
+            print(f"Residuals: mean={mean_res:.3f} um, max={max_res:.3f} um")
 
     # --- Check quality ---
     if mean_res > 5.0:

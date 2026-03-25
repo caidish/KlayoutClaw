@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qiskit-mcp"
+version = "0.2.0"
+description = "Qiskit MCP Server — namespace queries + cell manipulation for Jupyter-based quantum simulation"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0",
+    "uvicorn",
+    "qiskit>=1.0",
+    "pyyaml>=6.0",
+    "mcp>=1.0",
+    "instrmcp>=2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "qiskit-aer>=0.13",
+    "scqubits>=3.0",
+]
+
+[project.scripts]
+qiskit-mcp-launcher = "qiskit_mcp.launcher.qiskit_launcher:main"
+
+[tool.setuptools.package-dir]
+"qiskit_mcp" = "."
+"qiskit_mcp.backend" = "backend"
+"qiskit_mcp.core" = "core"
+"qiskit_mcp.config" = "config"
+"qiskit_mcp.launcher" = "launcher"
+
+[tool.setuptools]
+packages = [
+    "qiskit_mcp",
+    "qiskit_mcp.backend",
+    "qiskit_mcp.core",
+    "qiskit_mcp.config",
+    "qiskit_mcp.launcher",
+]
+
+[tool.setuptools.package-data]
+"qiskit_mcp" = ["config/*.yaml"]

@@ -12,6 +12,12 @@ Built for device physicists working on 2D material devices, superconducting qubi
 
 ![Demo](docs/demo.gif)
 
+### Real Sample Nanodevice Demo
+
+Full nanodevice fabrication pipeline on a real van der Waals heterostructure sample: load a GDS template, overlay flake detection results from the `flakedetect` and `gdsalign` pipelines, generate a 8 pin Hall bar, and route 11 pins to bonding pads using multi-window routing.
+
+![Real Sample Demo](docs/ml08_demo.gif)
+
 ## What's Inside
 
 KlayoutClaw has three layers:
@@ -190,7 +196,8 @@ KlayoutClaw/
 │       └── routing/              # Pad placement + autorouting
 ├── tools/
 │   ├── gds_to_image.py           # GDS → PNG converter (gdstk + matplotlib)
-│   ├── capture_demo.py           # Demo capture script
+│   ├── capture_demo.py           # Simple Hall bar demo capture script
+│   ├── capture_ml08_demo.py      # ML08 nanodevice demo
 │   └── route_worker.py           # Subprocess routing engine
 ├── tests/
 │   ├── test_connection.py        # Protocol-level MCP test
@@ -206,7 +213,7 @@ KlayoutClaw/
 │   └── test_autoroute.sh         # E2E autoroute test
 ├── tests_resources/              # Test fixtures
 │   ├── graphene_for_test.jpg     # Graphene microscope image
-│   └── ml08/                     # Microscope images + Template.gds
+│   └── ml08/                     # ML08 sample data
 ├── docs/
 │   ├── tools.md                  # MCP tool reference (6 tools)
 │   ├── skills.md                 # Skills reference (7 skills)
@@ -217,6 +224,18 @@ KlayoutClaw/
 ├── mcp_config.json               # MCP client config (HTTP, port 8765)
 └── pyproject.toml                # pytest configuration
 ```
+
+## Qiskit Quantum Simulation (Experimental)
+
+KlayoutClaw can be paired with a **Qiskit MCP server** for quantum device simulation. The agent reads transmon geometry from KLayout, writes simulation code (scqubits, qiskit-aer) in JupyterLab notebook cells, and verifies device physics -- all visible in the notebook.
+
+```
+Claude Code ──┬── KLayout MCP (8765)    layout geometry
+              ├── instrMCP (8123)        notebook cell manipulation
+              └── Qiskit MCP (8124)      namespace queries + resources
+```
+
+See **[docs/qiskit_mcp.md](docs/qiskit_mcp.md)** for full setup, tool reference, and testing instructions.
 
 ## Architecture
 

@@ -21,8 +21,8 @@ Save the current KLayout layout to a temporary GDS file, convert it to PNG, and 
 python scripts/capture.py [--output path.png] [--gds path.gds] [--dpi 200]
 ```
 
-- `--output` — PNG output path (default: `/tmp/klayoutclaw_capture.png`)
-- `--gds` — GDS output path (default: `/tmp/klayoutclaw_capture.gds`)
+- `--output` — PNG output path. **If the user has a working directory or stack path, save there instead of `/tmp`.**
+- `--gds` — GDS output path. Same rule: prefer the user's working directory over `/tmp`.
 - `--dpi` — Image resolution (default: 200)
 
 Returns the paths to both the GDS and PNG files, printed to stdout.

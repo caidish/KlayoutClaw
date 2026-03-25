@@ -14,6 +14,10 @@ Align microscope images to a GDS fabrication template by detecting lithographic 
 - flakedetect output: `traces.json` with material contours in pixel coordinates
 - All scripts: `conda run -n base python <script>`
 
+## Default Output Directory
+
+**If the user does not specify an output path, default to `<stack_image_dir>/output/gdsalign/`** (the directory containing the source images). Never use `/tmp` as the default output.
+
 ---
 
 ## Agent Workflow
@@ -60,6 +64,8 @@ Renders marker-pair templates from `gds_markers.json`, then runs multi-method te
 
 **Outputs**: `image_markers.json`, `01_template.png`, `03_detections.png`
 
+**Verification**: After running, view `03_detections.png`. The 4 detected markers (colored circles) should form a roughly square pattern, ~300-400 um apart (a few thousand pixels at 0.087 um/px), centered in the image near the flake region. The `pixel_size` parameter is critical for correct template rendering — use the value specified in the task instructions (typically 0.087 um/px). If detections look wrong (markers on image edges, or only 2-3 found), check that pixel_size matches the actual microscope magnification.
+
 ### align_gds.py
 
 ```bash
@@ -69,7 +75,7 @@ conda run -n base python skills/nanodevice/gdsalign/scripts/align_gds.py \
     --output-dir output/gdsalign/
 ```
 
-Exhaustive enumeration over 2-point correspondences finds the best reflected similarity (image Y-down → GDS Y-up), then least-squares refinement over all inliers. Automatically resolves the 180° ambiguity for rotationally symmetric marker patterns (prefers `M[0,0] > 0`, i.e. no horizontal flip).
+Exhaustive enumeration over 2-point correspondences finds the best reflected similarity (image Y-down → GDS Y-up), then least-squares refinement over all inliers. Automatically resolves rotational ambiguity (90°/180°/270°) for symmetric marker patterns by preferring the solution closest to 0° rotation.
 
 **Outputs**: `gds_warp.npy` (2×3 affine matrix), `gds_alignment_report.json`
 
@@ -110,7 +116,7 @@ Warps the microscope image and material contours into GDS coordinates using the 
 
 ## Known Behaviour
 
-- **180° ambiguity**: Square marker grids have rotational symmetry — both θ and θ+180° yield identical residuals. `align_gds.py` automatically picks the companion with `M[0,0] > 0` (no horizontal flip), matching standard upright microscopy.
+- **Rotational ambiguity**: Square marker grids have rotational symmetry — θ, θ+90°, θ+180°, θ+270° can yield similar residuals. `align_gds.py` automatically tries all four companions and picks the one with rotation closest to 0°.
 - **PNG orientation**: The warped PNG (`full_stack_gds.png`) has GDS south at the top (standard for GDS→image rendering). KLayout overlay places it correctly via `origin_um = (x_min, y_min)`.
 
 ---
