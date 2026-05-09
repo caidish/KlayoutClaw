@@ -49,13 +49,17 @@ ENV LD_LIBRARY_PATH="/usr/local/lib/klayout"
 # KlayoutClaw source (build context is ~/testFolder/KlayoutClaw)
 COPY . /opt/KlayoutClaw
 
-# Worker symlinks → bind-mounted source for hot-reload.
-# At runtime, /opt/KlayoutClaw/tools is overridden by a read-only bind mount;
-# symlinks resolve through it.
-RUN mkdir -p /root/.klayout/pymacros \
-    && ln -sf /opt/KlayoutClaw/tools/route_worker.py /root/.klayout/pymacros/route_worker.py \
-    && ln -sf /opt/KlayoutClaw/tools/evaluate_worker.py /root/.klayout/pymacros/evaluate_worker.py \
-    && ln -sf /opt/KlayoutClaw/tools/ordered_loop.py /root/.klayout/pymacros/ordered_loop.py
+# Run the existing install.py — it knows how to copy .lym macros into
+# ~/.klayout/pymacros/ (where KLayout auto-loads them on startup),
+# install the worker scripts, and mirror the klayoutclaw_vc subpackage.
+# Then replace the .py worker copies with symlinks to /opt/KlayoutClaw/tools/
+# so bind-mount edits hot-reload the workers without rebuilding the image.
+# (The .lym macros stay as copies — KLayout reloads them on restart anyway.)
+RUN python3 /opt/KlayoutClaw/install.py \
+    && for w in route_worker.py evaluate_worker.py ordered_loop.py; do \
+         rm -f /root/.klayout/pymacros/$w \
+         && ln -s /opt/KlayoutClaw/tools/$w /root/.klayout/pymacros/$w; \
+       done
 
 COPY klayout-mcp/start-klayout.sh /usr/local/bin/start-klayout.sh
 RUN chmod +x /usr/local/bin/start-klayout.sh
