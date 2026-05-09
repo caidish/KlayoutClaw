@@ -1030,6 +1030,7 @@ def _tool_auto_route(args):
     _log("auto_route: using worker {}".format(worker_path))
 
     # Spawn subprocess
+    python_path = python_path or os.environ.get("PYTHON_PATH")
     if python_path:
         cmd = "{} {} {}".format(python_path, worker_path, config_json)
     else:
