@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ruby ruby-dev python3 python3-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-RUN git clone https://github.com/KLayout/klayout.git --branch 0.30.5 --depth 1 src
+RUN git clone https://github.com/KLayout/klayout.git --branch v0.30.5 --depth 1 src
 WORKDIR /build/src
 RUN ./build.sh -qt5 -python python3 -ruby ruby
 
