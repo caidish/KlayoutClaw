@@ -2378,12 +2378,13 @@ class KlayoutClawServer(pya.QTcpServer):
 
     def __init__(self, parent=None):
         super(KlayoutClawServer, self).__init__(parent)
-        ha = pya.QHostAddress("127.0.0.1")
+        _bind_addr = os.environ.get("KLAYOUT_MCP_BIND", "127.0.0.1")
+        ha = pya.QHostAddress(_bind_addr)
         ok = self.listen(ha, 8765)
         if not ok:
-            _log("ERROR: Failed to bind to 127.0.0.1:8765 — port may be in use")
+            _log("ERROR: Failed to bind to {}:8765 — port may be in use".format(_bind_addr))
             return
-        _log("MCP server listening on 127.0.0.1:8765")
+        _log("MCP server listening on {}:8765".format(_bind_addr))
         cb = sys.modules.get("_klayoutclaw")
         if cb:
             cb.server_port = 8765
