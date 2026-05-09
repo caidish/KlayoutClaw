@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates build-essential \
     qtbase5-dev qttools5-dev libqt5svg5-dev qtmultimedia5-dev \
     libqt5xmlpatterns5-dev qttools5-dev-tools \
+    libgit2-dev \
     ruby ruby-dev python3 python3-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
@@ -24,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb curl ca-certificates \
     libqt5core5a libqt5gui5 libqt5network5 libqt5xml5 libqt5svg5 libqt5multimedia5 libqt5printsupport5 \
     libqt5xmlpatterns5 libqt5sql5 libqt5designer5 libqt5help5 \
+    libgit2-1.7 \
     libruby \
     && rm -rf /var/lib/apt/lists/*
 
