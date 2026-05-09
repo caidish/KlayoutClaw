@@ -5,9 +5,16 @@ set -euo pipefail
 : "${KLAYOUT_MCP_BIND:=0.0.0.0}"
 export PYTHON_PATH KLAYOUT_MCP_BIND
 mkdir -p /tmp
-# NOTE: do NOT pass -j to klayout — KLayout auto-loads .lym macros from
-# ~/.klayout/pymacros (where install.py copies them at image-build time).
-# `-j` only adds a search path and does NOT auto-execute .lym files, and
-# combining it with `xvfb-run -s "-screen ..."` causes klayout to fail to spawn
-# in this Ubuntu 24.04 xvfb-run build (verified at runtime).
-exec xvfb-run -a klayout -e -nc
+
+# Don't `exec xvfb-run` directly — `xvfb-run` is a shell script that
+# forks Xvfb and then exec's the wrapped command, which has signal /
+# reaping issues when it ends up as PID 1 in a container (verified
+# at runtime: Xvfb starts but the wrapped klayout child never spawns).
+# Keep bash as PID 1 so it reaps Xvfb cleanly, then run xvfb-run as a
+# child. `wait` keeps PID 1 alive while klayout runs.
+xvfb-run -a klayout -e -nc &
+KL_PID=$!
+
+# Forward TERM/INT to xvfb-run for graceful shutdown
+trap 'kill -TERM $KL_PID 2>/dev/null; wait $KL_PID' TERM INT
+wait $KL_PID
