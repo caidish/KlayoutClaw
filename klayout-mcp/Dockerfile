@@ -19,6 +19,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
+    build-essential cmake libqhull-dev \
     xvfb curl ca-certificates \
     libqt5core5a libqt5gui5 libqt5network5 libqt5xml5 libqt5svg5 libqt5multimedia5 libqt5printsupport5 \
     libruby \
