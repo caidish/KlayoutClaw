@@ -38,7 +38,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHON_PATH="/opt/venv/bin/python"
 RUN uv pip install gdstk==0.9.60 numpy==1.26.4 \
     opencv-python-headless==4.11.0.86 scikit-learn==1.6.1 \
-    scipy==1.15.3 scikit-image==0.24.0 matplotlib==3.10.3 shapely==2.1.1
+    scipy==1.15.3 scikit-image==0.24.0 matplotlib==3.10.3 shapely==2.1.1 \
+    klayout==0.30.5
 
 # Copy KLayout binaries from builder stage.
 # Source build outputs to /build/src/bin-release/.
