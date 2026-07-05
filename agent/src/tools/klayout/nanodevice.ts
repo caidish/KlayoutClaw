@@ -200,8 +200,8 @@ function registerFlakedetectTools(): CodeGenTool[] {
             },
             graphene: {
               command: `python ${scriptsDir}/graphene.py --image <top_part_image> --pixel-size <px> --output-dir <out>/detect/ ${args.mirror ? "--mirror" : ""}`,
-              check: "View 00_graphene_candidates.png. Auto-selects brightest. Override with --cluster-id <N> if wrong.",
-              look_for: "Bright region within the flake — not artifacts or overexposure",
+              check: "View 00_graphene_candidates.png and read graphene_result.json.top_candidates. The yellow-bordered rank is selected; override with --cluster-id <N> if another panel isolates graphene better.",
+              look_for: "Coherent graphene region within the top flake — not artifacts, hBN regions, or overexposure",
             },
             bottom_hbn: {
               command: `python ${scriptsDir}/bottom_hbn.py --image <bottom_part_image> --warp-matrix <out>/align/warp_sift_bottom.npy --target-image <full_stack_image> --pixel-size <px> --output-dir <out>/detect/`,
@@ -214,6 +214,7 @@ function registerFlakedetectTools(): CodeGenTool[] {
           },
           notes: [
             "All 4 scripts can run in parallel (independent).",
+            "Graphene writes a real ranked candidate panel at 00_graphene_candidates.png plus selected/top_candidates metadata in graphene_result.json.",
             "After all complete, assemble detections.json by reading each *_result.json.",
             "Include mirrored: true for graphene if --mirror was used.",
           ],

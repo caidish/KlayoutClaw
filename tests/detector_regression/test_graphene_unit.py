@@ -14,7 +14,7 @@ DETECT = Path(__file__).resolve().parents[2] / "skills" / "nanodevice_flakedetec
 
 
 def _src() -> str:
-    return (DETECT / "graphene.py").read_text()
+    return (DETECT / "graphene.py").read_text(encoding="utf-8")
 
 
 def test_no_offline_priors_referenced():
@@ -56,6 +56,22 @@ def test_low_confidence_flag_emitted():
     src = _src()
     assert '"low_confidence"' in src or "'low_confidence'" in src, (
         "graphene.py must emit low_confidence in its result JSON"
+    )
+
+
+def test_graphene_emits_ranked_candidate_panel_and_sidecar():
+    """graphene.py must expose ranked candidates for agent visual selection."""
+    src = _src()
+    assert "draw_graphene_candidates" in src, (
+        "graphene.py must render a true ranked candidate panel, not alias the "
+        "final overlay to 00_graphene_candidates.png"
+    )
+    assert "top_candidates" in src, (
+        "graphene_result.json must include top_candidates so agents can inspect "
+        "ranked scores and choose --cluster-id"
+    )
+    assert "selected" in src, (
+        "graphene_result.json must include selected candidate metadata"
     )
 
 
@@ -139,7 +155,7 @@ def test_graphene_uses_footprint_containment_when_available():
     spatial containment scoring so the default cluster (rank 0) is reliably
     the footprint-contained graphene flake, eliminating agent cluster-id overrides.
     """
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
     # Must mention both footprint and containment concepts
     assert ("footprint" in src.lower() and "containment" in src.lower()), (
         "graphene.py must mention footprint-containment scoring"
@@ -167,7 +183,7 @@ def test_graphene_contrast_filter_is_pool_relative():
     area signals so a large dim candidate (AH07: relL=3, 2610 µm²) beats tiny
     bright spots (relL=95, 9 µm²) without GT-fitted thresholds.
     """
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
     # No 20% absolute gate — the literal 0.20 magnitude gate is removed.
     uses_abs_gate = (
         "MIN_CONTRAST_FRAC = 0.20" in src
@@ -211,7 +227,7 @@ def test_graphene_no_grow_for_plausible_seed():
     is present and set high enough (>= 0.80) so seeds at 15-78% of the footprint
     receive footprint-bounded grow rather than no-grow.
     """
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
     assert "FOOTPRINT_GROW_MAX_SEED_FRACTION" in src, (
         "graphene.py needs FOOTPRINT_GROW_MAX_SEED_FRACTION to gate footprint grow"
     )
@@ -234,7 +250,7 @@ def test_graphene_no_grow_for_plausible_seed():
 def test_graphene_hybrid_survival():
     """Survival uses a UNION of absolute-floor + top-area + top-contrast.
     No single filter should be able to drop a candidate that any other filter retains."""
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
     # Sentinels for the hybrid policy
     for token in ["ABSOLUTE_RELL_FLOOR", "TOP_AREA_KEEP", "TOP_CONTRAST_KEEP"]:
         assert token in src, f"{token} missing from hybrid policy"
@@ -253,7 +269,7 @@ def test_graphene_containment_penalty_uses_absolute_overlap():
     The fix: apply the penalty only when BOTH fractional containment < 0.5 AND
     absolute overlap < expected minimum (0.5% of footprint area).
     """
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
     # The absolute overlap variable or concept must be present.
     has_absolute_overlap = (
         "absolute_overlap_px" in src
@@ -285,7 +301,7 @@ def test_graphene_bridges_polarity_consistent_ccs():
     2. The physics constants BRIDGE_MAX_DISTANCE_UM and
        BRIDGE_REL_L_MAGNITUDE_RATIO are present.
     """
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
     assert "_bridge_polarity_consistent_ccs" in src or "bridge_polarity" in src.lower(), (
         "graphene.py must implement intra-flake bridging"
     )
@@ -320,7 +336,7 @@ def test_graphene_auto_footprint_informs_scoring():
     2. main() routing uses footprint_mask_score_only for auto-discovered footprint.
     3. _score_candidates uses fp_for_scoring fallback (score_only when no explicit).
     """
-    src = (DETECT / "graphene.py").read_text()
+    src = _src()
 
     # 1. detect_graphene() must accept footprint_mask_score_only
     assert "footprint_mask_score_only" in src, (
