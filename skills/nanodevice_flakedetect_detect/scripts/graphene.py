@@ -49,9 +49,10 @@ CLI:
 Outputs in --output-dir:
     graphene_mask.png
     graphene_contour.npy   (N, 2) float64, top_part pixel coords
-    graphene_result.json   sidecar: area, cluster_id, low_confidence
+    graphene_result.json   sidecar: area, selected, top_candidates,
+                            cluster_id, low_confidence
     02_graphene_on_top.png diagnostic overlay
-    00_graphene_candidates.png  (legacy alias for diagnostic)
+    00_graphene_candidates.png  ranked candidate panel for agent selection
 """
 from __future__ import annotations
 
@@ -284,6 +285,98 @@ def _load_footprint_in_toppart_coords(
 
 # Named constant for the warp binarisation threshold (avoids naked numeric).
 FOOTPRINT_WARP_BINARY_THRESH = 127
+
+
+GRAPHENE_CANDIDATE_TOP_N = 8
+GRAPHENE_CANDIDATE_PANEL_SPLIT = 4
+
+_MID = 128
+_GRAPHENE_PALETTE = [
+    (0, 200, 255), (0, 255, 0), (0, 0, 255), (255, 0, 0),
+    (255, 0, 255), (255, 255, 0), (255, _MID, 0), (_MID, 255, _MID),
+]
+
+
+def _candidate_public_record(record: dict, rank: int) -> dict:
+    out = {
+        'rank': rank,
+        'lab_idx': int(record.get('lab_idx', -1)),
+        'polarity': int(record.get('polarity', 0)),
+        'area_px': int(record.get('area_px', 0)),
+        'area_um2': round(float(record.get('area_um2', 0.0)), 2),
+        'score': round(float(record.get('score', 0.0)), 4),
+        'aspect': round(float(record.get('aspect', 0.0)), 2),
+        'solidity': round(float(record.get('solidity', 0.0)), 3),
+        'L_med': round(float(record.get('L_med', 0.0)), 2),
+        'rel_L_med': round(float(record.get('rel_L_med', 0.0)), 2),
+        'source_threshold': round(float(record.get('_thr', 0.0)), 2),
+    }
+    for key in ('s_area', 's_contrast', 's_solidity', 's_containment',
+                'containment_raw'):
+        val = record.get(key)
+        out[key] = None if val is None else round(float(val), 4)
+    return out
+
+
+def draw_graphene_candidates(image_bgr: np.ndarray,
+                             ranked: list[dict],
+                             top_n: int = GRAPHENE_CANDIDATE_TOP_N,
+                             selected_rank: int = 0) -> np.ndarray:
+    """Render a ranked candidate panel for agent visual selection."""
+    h_img, w_img = image_bgr.shape[:2]
+    n_show = min(max(0, int(top_n)), len(ranked))
+    if n_show <= 0:
+        return desaturate(image_bgr, factor=0.4)
+
+    n_cols = 3 if n_show > GRAPHENE_CANDIDATE_PANEL_SPLIT else min(n_show, 2)
+    n_rows = (n_show + n_cols - 1) // n_cols
+    base = desaturate(image_bgr, factor=0.55)
+    panels = []
+
+    for rank in range(n_show):
+        rec = ranked[rank]
+        mask = rec.get('_cc_mask')
+        panel = base.copy()
+        color = _GRAPHENE_PALETTE[rank % len(_GRAPHENE_PALETTE)]
+        if mask is not None:
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+            overlay = panel.copy()
+            cv2.drawContours(overlay, cnts, -1, color, -1)
+            panel = cv2.addWeighted(overlay, 0.32, panel, 0.68, 0)
+            cv2.drawContours(panel, cnts, -1, color, 2)
+        if rank == selected_rank:
+            cv2.rectangle(panel, (0, 0), (w_img - 1, h_img - 1),
+                          (0, 255, 255), 8)
+
+        label1 = (
+            f"#{rank} area={rec.get('area_um2', 0.0):.0f}um2 "
+            f"score={rec.get('score', 0.0):.3f}"
+        )
+        label2 = (
+            f"relL={rec.get('rel_L_med', 0.0):.1f} "
+            f"pol={rec.get('polarity', 0)} "
+            f"cont={rec.get('containment_raw', 0.0):.2f}"
+            if rec.get('containment_raw') is not None
+            else f"relL={rec.get('rel_L_med', 0.0):.1f} "
+                 f"pol={rec.get('polarity', 0)}"
+        )
+        cv2.rectangle(panel, (0, 0), (w_img, 70), (20, 20, 20), -1)
+        cv2.putText(panel, label1, (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.75, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(panel, label2, (12, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (220, 220, 220), 1, cv2.LINE_AA)
+        panels.append(panel)
+
+    panel_h = max(1, h_img // n_rows)
+    panel_w = max(1, w_img // n_cols)
+    fitted = [cv2.resize(p, (panel_w, panel_h), interpolation=cv2.INTER_AREA)
+              for p in panels]
+    while len(fitted) < n_rows * n_cols:
+        fitted.append(np.zeros_like(fitted[0]))
+    rows = [np.hstack(fitted[i * n_cols:(i + 1) * n_cols])
+            for i in range(n_rows)]
+    return np.vstack(rows)
 
 
 def spatial_containment_score(candidate_mask: np.ndarray,
@@ -1552,6 +1645,7 @@ def detect_graphene(
         'top_flake_mask': flake,
         'processed_image': img,
         'cc_records': public_records,
+        'candidate_records': cc_records,
         'selected_idx': best['lab_idx'],
         'low_confidence': False,
         'flake_ref_L': float(L_bg),
@@ -1695,12 +1789,15 @@ def main():
         sidecar = {
             'area_px': 0, 'area_um2': 0.0,
             'cluster_id': None,
+            'selected': None,
+            'top_candidates': [],
             'low_confidence': True,
         }
         (out_dir / 'graphene_result.json').write_text(json.dumps(sidecar, indent=2))
         diag = desaturate(result['processed_image'], factor=0.4)
         cv2.imwrite(str(out_dir / '02_graphene_on_top.png'), diag)
-        cv2.imwrite(str(out_dir / '00_graphene_candidates.png'), diag)
+        cv2.imwrite(str(out_dir / '00_graphene_candidates.png'),
+                    draw_graphene_candidates(result['processed_image'], []))
         return
 
     contour = result['graphene_contour']
@@ -1713,13 +1810,35 @@ def main():
     diag = desaturate(result['processed_image'], factor=0.4)
     cv2.drawContours(diag, [contour], -1, (0, 0, 255), 2)
     cv2.imwrite(str(out_dir / '02_graphene_on_top.png'), diag)
-    cv2.imwrite(str(out_dir / '00_graphene_candidates.png'), diag)  # legacy
+    selected_rank = 0
+    candidate_records = result.get('candidate_records', result['cc_records'])
+    for rank, rec in enumerate(candidate_records):
+        if rec.get('lab_idx') == result.get('selected_idx'):
+            selected_rank = rank
+            break
+    cv2.imwrite(str(out_dir / '00_graphene_candidates.png'),
+                draw_graphene_candidates(
+                    result['processed_image'], candidate_records,
+                    top_n=GRAPHENE_CANDIDATE_TOP_N,
+                    selected_rank=selected_rank,
+                ))
 
     area_px = int((mask > 0).sum())
     area_um2 = round(area_px * args.pixel_size * args.pixel_size, 2)
+    top_candidates = [
+        _candidate_public_record(rec, rank)
+        for rank, rec in enumerate(candidate_records[:GRAPHENE_CANDIDATE_TOP_N])
+    ]
+    selected = (
+        top_candidates[selected_rank]
+        if 0 <= selected_rank < len(top_candidates) else None
+    )
     sidecar = {
         'area_px': area_px, 'area_um2': area_um2,
         'cluster_id': result.get('selected_idx'),
+        'selected_rank': selected_rank,
+        'selected': selected,
+        'top_candidates': top_candidates,
         'low_confidence': bool(result.get('low_confidence', False)),
     }
     (out_dir / 'graphene_result.json').write_text(json.dumps(sidecar, indent=2))

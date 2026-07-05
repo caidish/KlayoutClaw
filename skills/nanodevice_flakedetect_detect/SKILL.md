@@ -8,7 +8,7 @@ description: Detect individual material layers (graphite, graphene, bottom hBN, 
 Detect each material from its optimal source image. Four independent scripts, one per material.
 
 - **graphite** (or backgate-metal) — `graphite.py`. Single adaptive pipeline that produces a ranked list of candidates and lets the agent pick which one is graphite via `--cluster-id` (vision-required). All other parameters are knobs the agent can tune ONLY when the candidate the agent wanted to pick isn't in the top-N panel.
-- **graphene** — K-means sub-clustering inside the top-flake mask, brightest cluster.
+- **graphene** — adaptive signed-contrast candidates inside the top-flake mask. Emits a ranked candidate panel and lets the agent pick which one is graphene via `--cluster-id` when the default is wrong.
 - **bottom_hBN** — multi-K (4/6/8) K-means + HSV-gate union candidates over GT-fitted priors. Picks the highest-scoring candidate.
 - **top_hBN** — copies the footprint from the align step.
 
@@ -38,7 +38,8 @@ All four detectors are independent — `bottom_hbn.py`, `graphene.py`, `top_hbn.
    → Inspect bottom_hbn_result.json: check `low_confidence`, `fallback_source`.
 
 2. Run graphene.py on top_part [--mirror]
-   → Review 00_graphene_candidates.png; override with --cluster-id <N> if needed.
+   → Review 00_graphene_candidates.png and `graphene_result.json.top_candidates`;
+     override with --cluster-id <N> if the selected rank is not graphene.
 
 3. Run top_hbn.py (copies footprint from align) → 04_top_hbn_footprint.png.
 
@@ -131,18 +132,18 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} graphite.py \
 
 ## Graphene Detection — Tuning Guide
 
-**Method**: Isolates the flake on PDMS via brightness+saturation thresholding, then K-means sub-clusters (default 3) within the flake in LAB space. Auto-selects the brightest sub-cluster.
+**Method**: Isolates the top flake, generates signed bright/dark contrast candidates in LAB space, ranks them by area/contrast/shape plus footprint containment when available, then writes a candidate panel for agent review.
 
-**Key insight**: On PDMS, the flake has multiple brightness zones. Graphene is the brightest, but the auto-selection can grab overexposed artifacts or bright hBN instead. Always review the candidates.
+**Key insight**: The auto-selection is rank #0, but the final authority is the candidate panel. Use `--cluster-id <rank>` when the highlighted candidate is an artifact, hBN region, or only a fragment while another panel isolates graphene better.
 
 ### What to look for in 00_graphene_candidates.png
 
 | What you see | What's wrong | Action |
 |-------------|-------------|--------|
 | One panel highlights the graphene region within the flake | Correct | Use `--cluster-id <N>` if not auto-selected |
-| Auto-selected panel includes bright artifacts/reflections along with graphene | Brightest cluster includes non-graphene | Override with a panel that shows just the graphene region |
-| Graphene region is split or partial | Sub-clusters too fine | Re-run with `--n-sub-clusters 2` |
-| No panel clearly isolates graphene | Sub-clusters too coarse or graphene too subtle | Re-run with `--n-sub-clusters 5` for finer segmentation |
+| Auto-selected panel includes artifacts/reflections along with graphene | Wrong ranked candidate | Override with a panel that shows just the graphene region |
+| Graphene region is split or partial | Selected seed is only a fragment | Prefer a panel with fuller graphene coverage; if none exists, keep default and note low confidence |
+| No panel clearly isolates graphene | Candidate pool is ambiguous | Inspect `graphene_result.json.top_candidates`; retry only if the image/footprint inputs are wrong |
 
 ### Important: --mirror flag
 
@@ -159,19 +160,19 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} graphene.py \
     --cluster-id 0 --output-dir <path>
 ```
 
-**Outputs**: `graphene_mask.png`, `graphene_contour.npy`, `graphene_result.json`, `00_graphene_candidates.png`, `02_graphene_on_top.png`
+**Outputs**: `graphene_mask.png`, `graphene_contour.npy`, `graphene_result.json` (`selected`, `selected_rank`, `top_candidates[]`), `00_graphene_candidates.png` (ranked candidate panel), `02_graphene_on_top.png` (final selected overlay)
 
 ---
 
 ## Bottom hBN Detection
 
-**Method**: shares the first step of `graphite.py`. The bottom hBN region IS the host produced by substrate rejection — on every bench stack the largest non-substrate connected component in `bottom_part` is the bottom hBN.
+**Method**: shares the first step of `graphite.py` to get a non-substrate host prior, then classifies the hBN subregion inside that host before warping it to full_stack coordinates.
 
 1. Substrate sample `mu_sub` = LAB peak of `H_corners × H_image × L` (joint histogram mode of corner + image pixels, weighted by brightness).
 2. Host mask = pixels with LAB distance to `mu_sub` above plateau-midpoint `T*` (multi-scale local-baseline peak detection on `dA(T)/dT`, midpoint of the valley between substrate peak and first-flake peak).
 3. Morph clean → keep largest CC → 4-corner flood-fill-holes.
 4. Warp from bottom_part to full_stack coords via the SIFT-derived affine matrix from align step.
-5. Final 1.5 µm dilation to match the GT-dilation convention.
+5. Final fixed 1.5 µm dilation to match the current GT-dilation convention.
 
 `compute_host` is imported directly from `graphite.py` — single source of truth for substrate detection. No priors, no fitted thresholds, no `bottom_hbn_shape_priors.json` dependency.
 
@@ -192,7 +193,7 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} bottom_hbn.py \
     --pixel-size <um/px> --output-dir <path>
 ```
 
-**Outputs**: `bottom_hbn_mask.png` (full_stack coords), `bottom_hbn_mask_bp.png` (bottom_part coords; kept for backward compat), `bottom_hbn_contour.npy`, `bottom_hbn_result.json` (area + `substrate.{corner, mu_lab, t_star}` + `low_confidence`), `03_bottom_hbn_on_full.png`
+**Outputs**: `bottom_hbn_mask.png` (full_stack coords), `bottom_hbn_mask_bp.png` (bottom_part coords; kept for backward compat), `bottom_hbn_contour.npy`, `bottom_hbn_result.json` (area + `substrate.{corner, mu_lab, t_star}` + `dilation_um: 1.5` + `low_confidence`), `03_bottom_hbn_on_full.png`
 
 ---
 

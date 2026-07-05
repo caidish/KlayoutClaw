@@ -10,7 +10,7 @@ DETECT = Path(__file__).resolve().parents[2] / "skills" / "nanodevice_flakedetec
 
 
 def _src() -> str:
-    return (DETECT / "bottom_hbn.py").read_text()
+    return (DETECT / "bottom_hbn.py").read_text(encoding="utf-8")
 
 
 def test_docstring_does_not_claim_host_equals_hbn():
@@ -39,16 +39,24 @@ def test_has_hbn_classification_step():
     )
 
 
-def test_dilation_derived_from_registration():
+def test_dilation_uses_fixed_gt_convention():
     src = _src()
-    # forbid the literal 1.5 in a dilation expression
+    assert "BOTTOM_HBN_DILATION_UM" in src, (
+        "bottom_hbn.py must expose the fixed bottom hBN dilation radius as "
+        "a named constant"
+    )
     tree = ast.parse(src)
-    offenders = []
+    values = []
     for n in ast.walk(tree):
-        if isinstance(n, ast.Constant) and n.value == 1.5:
-            offenders.append(n.lineno)
-    assert not offenders, (
-        f"bottom_hbn.py still uses literal 1.5 um dilation at lines {offenders}"
+        if isinstance(n, ast.Assign):
+            for target in n.targets:
+                if (isinstance(target, ast.Name)
+                        and target.id == "BOTTOM_HBN_DILATION_UM"
+                        and isinstance(n.value, ast.Constant)):
+                    values.append(n.value.value)
+    assert values == [1.5], (
+        "bottom_hbn.py must use the current fixed GT-convention dilation "
+        f"of 1.5 um, got {values}"
     )
 
 

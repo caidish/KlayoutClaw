@@ -21,9 +21,7 @@ Pipeline:
      any other multi-material host regions.
   4. Warp hBN mask from bottom_part coords to full_stack coords.
   5. Post-warp morphology: kernels derived from pixel_size via _kernel_from_um.
-  6. Dilation to account for registration residual: derived from
-     alignment_report.json residual_um field if present; otherwise uses a
-     conservative fixed fraction of the host bounding-box diagonal.
+  6. Fixed 1.5 um dilation to match the current GT-dilation convention.
 
 After detection the mask is warped from bottom_part coords to full_stack
 coords via the affine matrix from align/sift_align.py.
@@ -70,12 +68,8 @@ HBN_OTSU_CLIP_PERCENTILE = 99  # clip tail before fitting Otsu
 POSTWARP_CLOSE_UM = 0.435   # ≈ 5 px at 0.087 um/px
 POSTWARP_OPEN_UM = 0.261    # ≈ 3 px at 0.087 um/px
 
-# Dilation: conservative default as fraction of host bounding-box diagonal.
-# When alignment_report.json is available the actual residual is used instead.
-# This is not a GT-matching convention — it accounts for registration residual
-# so the hBN region boundary has appropriate coverage.
-DILATION_HOST_FRAC = 0.015    # 1.5% of host bbox diagonal (adaptive)
-DILATION_RESIDUAL_SCALE = 2.0  # residual_um × 2 = dilation radius
+# Dilation: fixed GT-convention radius for bottom hBN masks.
+BOTTOM_HBN_DILATION_UM = 1.5
 
 # Low-confidence: hBN area < 0.5% of host area means the classification step
 # found almost nothing — report low_confidence rather than a spurious mask.
@@ -87,64 +81,10 @@ def invert_affine(M: np.ndarray) -> np.ndarray:
     return np.linalg.inv(M3)[:2]
 
 
-def _read_registration_residual(warp_matrix_path: str,
-                                pixel_size: float) -> float | None:
-    """Try to read registration residual from alignment_report.json sidecar.
-
-    Returns residual in microns if available, else None.
-    """
-    warp_path = os.path.abspath(warp_matrix_path)
-    align_dir = os.path.dirname(warp_path)
-    report_path = os.path.join(align_dir, 'alignment_report.json')
-    if not os.path.exists(report_path):
-        return None
-    try:
-        with open(report_path) as f:
-            report = json.load(f)
-        # alignment_report.json may store residual in various places
-        # Try multiple common keys
-        for key_path in [
-            ('alignments', 'bottom', 'residual_um'),
-            ('bottom', 'residual_um'),
-            ('residual_um',),
-            ('alignments', 'bottom', 'rms_error_um'),
-            ('bottom', 'rms_error_um'),
-        ]:
-            val = report
-            for k in key_path:
-                if isinstance(val, dict) and k in val:
-                    val = val[k]
-                else:
-                    val = None
-                    break
-            if val is not None and isinstance(val, (int, float)) and float(val) > 0:
-                return float(val)
-    except Exception:
-        pass
-    return None
-
-
 def _dilation_radius_um(host_mask: np.ndarray, pixel_size: float,
                         warp_matrix_path: str) -> float:
-    """Compute dilation radius in microns.
-
-    Priority:
-      1. alignment_report.json residual × DILATION_RESIDUAL_SCALE
-      2. DILATION_HOST_FRAC × host bounding-box diagonal (fallback)
-    """
-    residual_um = _read_registration_residual(warp_matrix_path, pixel_size)
-    if residual_um is not None:
-        return max(pixel_size, residual_um * DILATION_RESIDUAL_SCALE)
-
-    # Fallback: fraction of host bounding box diagonal
-    ys, xs = np.where(host_mask > 0)
-    if ys.size == 0:
-        return pixel_size  # 1 px minimum
-    h_bbox = float(ys.max() - ys.min() + 1)
-    w_bbox = float(xs.max() - xs.min() + 1)
-    diag_px = float(np.sqrt(h_bbox ** 2 + w_bbox ** 2))
-    diag_um = diag_px * pixel_size
-    return max(pixel_size, diag_um * DILATION_HOST_FRAC)
+    """Return the fixed bottom hBN dilation radius in microns."""
+    return max(pixel_size, BOTTOM_HBN_DILATION_UM)
 
 
 def extract_hbn(host_mask: np.ndarray,
@@ -278,7 +218,7 @@ def main() -> int:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_k)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_k)
 
-    # Step 4: Dilation — derived from registration residual or host bbox
+    # Step 4: Dilation — fixed GT-convention radius
     dilate_um = _dilation_radius_um(host_bp, args.pixel_size, args.warp_matrix)
     dilate_k = _kernel_from_um(dilate_um, args.pixel_size, ellipse=True)
     mask = cv2.dilate(mask, dilate_k)
