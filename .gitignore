@@ -16,3 +16,7 @@ agent/.tmp/
 paper/
 opencode.json
 Submission/
+
+# Local agent configuration
+.agents/
+.codex/
