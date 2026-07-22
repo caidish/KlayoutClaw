@@ -435,6 +435,38 @@ Conda env: `instrMCPdev` (all deps pre-installed)
 
 See `skills/nanodevice_flakedetect/SKILL.md` for the orchestrator workflow, and each sub-skill's SKILL.md for detailed script references and tuning guides.
 
+
+---
+
+## SAM-Assisted Flake Detection (nanodevice_flakedetect_sam)
+
+Optional wrappers around the standard graphite, graphene, bottom hBN, and top hBN detectors. These scripts keep the normal `nanodevice_flakedetect_detect` outputs while adding prompt candidate images and JSON sidecars that can be refined by a local SAM2 checkout.
+
+### Scripts
+
+```bash
+conda run -n instrMCPdev python skills/nanodevice_flakedetect_sam/scripts/graphene.py \
+    --image top_part.jpg --pixel-size 0.087 --output-dir output/detect/
+```
+
+Graphene emits candidate overlays such as `graphene_candidate_01_on_grid.png` plus `graphene_prompt_candidates.json`; graphite emits a source grid for manual prompt selection. Use `--use-sam2` only after installing PyTorch, adding the SAM2 source under `tools/sam2-main` or setting `SAM2_ROOT`, and placing the checkpoint at `tools/sam2-main/model/sam2.1_hiera_base_plus.pt`.
+
+If SAM2 is unavailable, the wrapper does not block the pipeline: it records the reason and returns the baseline detector result.
+
+Download the optional pieces from:
+
+- SAM2 source: https://github.com/facebookresearch/sam2
+- SAM2.1 base-plus checkpoint: https://huggingface.co/facebook/sam2.1-hiera-base-plus/tree/main (`sam2.1_hiera_base_plus.pt`)
+
+### Dependencies
+
+- Baseline: same `instrMCPdev` stack as `nanodevice_flakedetect`
+- Optional refinement: PyTorch, local SAM2 source checkout, SAM2 checkpoint
+
+### Full Documentation
+
+See `skills/nanodevice_flakedetect_sam/SKILL.md`.
+
 ---
 
 ## Nanodevice Routing (nanodevice_routing)

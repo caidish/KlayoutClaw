@@ -1,0 +1,17 @@
+﻿name: instrMCPdev
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy
+      - scipy
+      - scikit-image
+      - scikit-learn
+      - opencv-python-headless
+      - gdstk
+      - shapely
+      - matplotlib
+      - klayout==0.30.3
+      - pytest
