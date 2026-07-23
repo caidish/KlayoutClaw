@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""Top hBN detection — footprint as geometry + material evidence validation.
+"""Top hBN detection 鈥?footprint as geometry + material evidence validation.
 
 The alignment footprint remains the geometry source for the top hBN mask.
 Phase 4 adds image-evidence validation: the script checks that the footprint
 region genuinely contains hBN-like contrast vs the substrate before emitting
-the mask. It does NOT discard the footprint on low confidence — it annotates
+the mask. It does NOT discard the footprint on low confidence 鈥?it annotates
 the result JSON with a quality signal so the agent can make informed decisions.
 
 Design rationale:
-  The footprint already achieves IoU=0.87–0.97 across mlxx stacks. Replacing
+  The footprint already achieves IoU=0.87鈥?.97 across mlxx stacks. Replacing
   it would risk regression. Instead, we add a parallel evidence computation
   path whose output is diagnostic, not gating.
 
@@ -16,12 +16,12 @@ Validation steps:
   1. Sample substrate LAB from image corners (10 % margin on each side).
   2. Compute per-pixel LAB distance from substrate over the whole image.
   3. validate_hbn_contrast(): mean distance inside footprint / mean distance
-     over the whole image → evidence_score in [0, 1].  Higher = more
+     over the whole image 鈫?evidence_score in [0, 1].  Higher = more
      material-like inside the footprint.
-  4. Otsu on the in-footprint LAB-distance histogram: bimodal → clean
-     material/substrate separation → high confidence.  Unimodal (no clean
-     split) → low_confidence = True.
-  5. Enumerate all contours above an adaptive area floor (1 % × footprint_area)
+  4. Otsu on the in-footprint LAB-distance histogram: bimodal 鈫?clean
+     material/substrate separation 鈫?high confidence.  Unimodal (no clean
+     split) 鈫?low_confidence = True.
+  5. Enumerate all contours above an adaptive area floor (1 % 脳 footprint_area)
      in the result JSON (contour_areas), enabling multi-component inspection
      by the agent without changing the output mask.
 
@@ -87,7 +87,7 @@ def _sample_substrate_lab(image_lab: np.ndarray) -> np.ndarray:
     """Estimate substrate LAB by averaging image corner patches.
 
     Uses the 10 % corner margins on all four sides.  This is a lightweight
-    approximation — for top_hbn the footprint is already known from alignment,
+    approximation 鈥?for top_hbn the footprint is already known from alignment,
     so the only use of substrate_lab is the contrast score, which needs a
     reasonable neutral reference rather than a precise model.
 
@@ -152,7 +152,7 @@ def validate_hbn_contrast(image_bgr: np.ndarray,
     mean_whole = float(dist_map.mean())
 
     if mean_whole < _EPS_DIST:
-        # Degenerate image — flat; no evidence either way
+        # Degenerate image 鈥?flat; no evidence either way
         return 0.0
 
     score = mean_inside / mean_whole
@@ -169,7 +169,7 @@ def _otsu_bimodality(values: np.ndarray) -> tuple[float | None, bool]:
         (otsu_threshold_in_original_units | None, is_bimodal)
 
     `is_bimodal` is True when the inter/total variance ratio exceeds
-    OTSU_BIMODALITY_MIN_RATIO — i.e. Otsu finds a clean split.
+    OTSU_BIMODALITY_MIN_RATIO 鈥?i.e. Otsu finds a clean split.
     """
     if values.size < _MIN_SAMPLE_FOR_OTSU:
         return None, False
@@ -177,7 +177,7 @@ def _otsu_bimodality(values: np.ndarray) -> tuple[float | None, bool]:
     v_min = float(values.min())
     v_max = float(values.max())
     if v_max - v_min < _EPS_RANGE:
-        # All identical — unimodal
+        # All identical 鈥?unimodal
         return None, False
 
     # Map to uint8
@@ -325,10 +325,10 @@ def main():
             # substrate-like pixels than material-like pixels inside footprint.
             low_confidence = fraction_above < EVIDENCE_SCORE_LOW_THRESHOLD
         else:
-            # Unimodal distribution — check which "mode" the footprint is in.
+            # Unimodal distribution 鈥?check which "mode" the footprint is in.
             # If the footprint mean distance is above the whole-image mean
             # (evidence_score >= 1.0), the footprint is uniformly material-rich
-            # → high confidence.  If below, it looks substrate-like → low.
+            # 鈫?high confidence.  If below, it looks substrate-like 鈫?low.
             low_confidence = evidence_score < EVIDENCE_SCORE_LOW_THRESHOLD
     else:
         low_confidence = True
@@ -379,7 +379,7 @@ def main():
         json.dump(result, f, indent=2)
 
     print(f"OK: top hBN = footprint (evidence-validated)")
-    print(f"  Area: {area_px} px ({area_um2} um²)")
+    print(f"  Area: {area_px} px ({area_um2} um虏)")
     print(f"  Contour points: {len(contour_2d)}")
     print(f"  Evidence score: {evidence_score:.4f}")
     print(f"  Otsu threshold: {material_otsu_threshold}")

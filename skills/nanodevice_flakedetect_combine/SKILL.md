@@ -3,7 +3,7 @@ name: nanodevice_flakedetect_combine
 description: Transform detection results into the common full_stack coordinate system, build unified traces.json, and draw overlay images. Use after align and detect steps are complete.
 ---
 
-# nanodevice_flakedetect_combine — Coordinate Transforms & Overlays
+# nanodevice_flakedetect_combine 鈥?Coordinate Transforms & Overlays
 
 Transforms all per-material detections into the full_stack coordinate system, produces the unified `traces.json`, and draws contour overlays on raw/LUT images.
 
@@ -16,7 +16,7 @@ Transforms all per-material detections into the full_stack coordinate system, pr
 
 ## Scripts
 
-### ecc_register.py — ECC raw-to-LUT translation alignment
+### ecc_register.py 鈥?ECC raw-to-LUT translation alignment
 
 ```bash
 ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_combine/scripts/ecc_register.py \
@@ -25,9 +25,9 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_co
     --output-dir <path>
 ```
 
-- `--raw` — Full stack raw image
-- `--lut` — Full stack LUT (color-enhanced) image
-- `--output-dir` — Output directory
+- `--raw` 鈥?Full stack raw image
+- `--lut` 鈥?Full stack LUT (color-enhanced) image
+- `--output-dir` 鈥?Output directory
 
 Computes ECC translation alignment between raw and LUT images. The LUT image typically has a spatial offset (~71px dx, ~56px dy) from raw.
 
@@ -36,7 +36,7 @@ Computes ECC translation alignment between raw and LUT images. The LUT image typ
 
 **Note:** If no LUT image is available, skip this script. The overlay script handles the absence gracefully.
 
-### transform.py — Coordinate transforms for all materials
+### transform.py 鈥?Coordinate transforms for all materials
 
 ```bash
 ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_combine/scripts/transform.py \
@@ -48,12 +48,12 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_co
     [--min-area 500]
 ```
 
-- `--detections` — Path to detections.json from detect step
-- `--align-dir` — Directory containing warp matrices and footprint from align step
-- `--image` — Full stack raw image (for size reference)
-- `--pixel-size` — Microns per pixel
-- `--output-dir` — Output directory
-- `--min-area` — Minimum component area in pixels for `keep_largest_n` on the warped/clipped graphene mask. Default `500` px (≈ 5.6 µm² at 0.106 µm/px). Lower this when working at finer pixel sizes or with intentionally small flakes; raise it to reject more aggressive noise.
+- `--detections` 鈥?Path to detections.json from detect step
+- `--align-dir` 鈥?Directory containing warp matrices and footprint from align step
+- `--image` 鈥?Full stack raw image (for size reference)
+- `--pixel-size` 鈥?Microns per pixel
+- `--output-dir` 鈥?Output directory
+- `--min-area` 鈥?Minimum component area in pixels for `keep_largest_n` on the warped/clipped graphene mask. Default `500` px (鈮?5.6 碌m虏 at 0.106 碌m/px). Lower this when working at finer pixel sizes or with intentionally small flakes; raise it to reject more aggressive noise.
 
 **Transform rules by material:**
 
@@ -67,15 +67,15 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_co
 All materials get `smooth_material()` applied after transform.
 
 **Input files read from `--align-dir`:**
-- `warp_sift_bottom.npy` — inverted before use (bottom_part→full_stack)
-- `warp_top.npy` — applied directly (top_part→full_stack)
-- `footprint_mask.png` — for graphene clipping
+- `warp_sift_bottom.npy` 鈥?inverted before use (bottom_part鈫抐ull_stack)
+- `warp_top.npy` 鈥?applied directly (top_part鈫抐ull_stack)
+- `footprint_mask.png` 鈥?for graphene clipping
 
 **Outputs:**
-- `traces.json` — unified traces with all contours in full_stack pixel coordinates
-- `graphite_full.png`, `graphene_full.png`, `bottom_hbn_full.png`, `top_hbn_full.png` — transformed masks
+- `traces.json` 鈥?unified traces with all contours in full_stack pixel coordinates
+- `graphite_full.png`, `graphene_full.png`, `bottom_hbn_full.png`, `top_hbn_full.png` 鈥?transformed masks
 - Appends `transform_summary` section to `combine_report.json`
-- Appends `transform_diagnostics` section to `combine_report.json` — per-material per-stage pixel counts (see below)
+- Appends `transform_diagnostics` section to `combine_report.json` 鈥?per-material per-stage pixel counts (see below)
 
 **Per-stage diagnostics (`transform_diagnostics`):**
 
@@ -114,7 +114,7 @@ Example success entry:
 
 This refusal composes with the alignment-status refusal: `transform.py` already exits with code 2 when `alignment_report.status` (or `footprint.status`) is `failed` / `needs_rotation_selection`. Per-stage diagnostics only run after that gate passes.
 
-### overlay.py — Contour overlay visualization
+### overlay.py 鈥?Contour overlay visualization
 
 ```bash
 ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_combine/scripts/overlay.py \
@@ -125,11 +125,11 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_co
     --output-dir <path>
 ```
 
-- `--traces` — Path to traces.json from transform step
-- `--raw` — Full stack raw image
-- `--lut` — (optional) Full stack LUT image
-- `--combine-report` — (optional) Path to combine_report.json (for raw→LUT shift)
-- `--output-dir` — Output directory
+- `--traces` 鈥?Path to traces.json from transform step
+- `--raw` 鈥?Full stack raw image
+- `--lut` 鈥?(optional) Full stack LUT image
+- `--combine-report` 鈥?(optional) Path to combine_report.json (for raw鈫扡UT shift)
+- `--output-dir` 鈥?Output directory
 
 Draws material contours on desaturated background images using the BGR color palette:
 - top_hBN: green (0, 200, 0)
@@ -140,12 +140,12 @@ Draws material contours on desaturated background images using the BGR color pal
 For LUT overlay: reads dx, dy from combine_report.json and shifts contours before drawing.
 
 **Outputs:**
-- `overlay_raw.png` — all material contours on raw image
-- `overlay_lut.png` — all material contours on LUT image (if --lut provided)
-- `mask_composite.png` — all material masks color-coded at 50% alpha
+- `overlay_raw.png` 鈥?all material contours on raw image
+- `overlay_lut.png` 鈥?all material contours on LUT image (if --lut provided)
+- `mask_composite.png` 鈥?all material masks color-coded at 50% alpha
 - Appends `overlay_files` section to `combine_report.json`
 
-### rank_candidate_pairs.py — rank material pairs by overlap (default graphene × graphite)
+### rank_candidate_pairs.py 鈥?rank material pairs by overlap (default graphene 脳 graphite)
 
 Ranks every pair across two detected material lists by intersection area. Useful whenever a downstream design step requires a material pair with non-trivial overlap and the rank-0 detections do not always satisfy that constraint. Defaults to `--material-a graphene --material-b graphite` for the vdW-Hall-bar workflow, but any two material keys that exist in `traces.json` will work (e.g. `--material-a top_hBN --material-b bottom_hBN` to rank encapsulation pairs).
 
@@ -157,17 +157,17 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_co
     [--material-a graphene] [--material-b graphite]
 ```
 
-- `--traces` — Path to traces.json (works on both pre- and post-gdsalign traces: uses `contour_gds` if present, falls back to `contour_um`)
-- `--output` — Path to the ranking JSON (default: alongside traces.json)
-- `--top-k` — How many top pairs to echo on stdout (default 5). The JSON file always contains all pairs.
-- `--material-a`, `--material-b` — Material keys to pair (default graphene × graphite)
+- `--traces` 鈥?Path to traces.json (works on both pre- and post-gdsalign traces: uses `contour_gds` if present, falls back to `contour_um`)
+- `--output` 鈥?Path to the ranking JSON (default: alongside traces.json)
+- `--top-k` 鈥?How many top pairs to echo on stdout (default 5). The JSON file always contains all pairs.
+- `--material-a`, `--material-b` 鈥?Material keys to pair (default graphene 脳 graphite)
 
 Computes polygon intersection area between every (material_a, material_b) candidate pair, ranks by overlap area descending, and writes an ordered list.
 
 **Outputs:**
-- `candidate_ranking.json` — ordered list with fields: `{rank, graphene_id, graphite_id, overlap_um2, graphene_area_um2, graphite_area_um2, centroid_distance_um}`
+- `candidate_ranking.json` 鈥?ordered list with fields: `{rank, graphene_id, graphite_id, overlap_um2, graphene_area_um2, graphite_area_um2, centroid_distance_um}`
 
-**When to run:** When a first-pass design session discovers the auto-picked material-A × material-B pair has `overlap_um2 ≈ 0`. The ranking surfaces a pair with non-trivial overlap without brute-force iteration. (Observed failure mode: ml09 / ml11 benchmarks where default graphene × graphite had no overlap.)
+**When to run:** When a first-pass design session discovers the auto-picked material-A 脳 material-B pair has `overlap_um2 鈮?0`. The ranking surfaces a pair with non-trivial overlap without brute-force iteration. (Observed failure mode: ml09 / ml11 benchmarks where default graphene 脳 graphite had no overlap.)
 
 ## Workflow
 
@@ -175,14 +175,14 @@ Run in order:
 1. `ecc_register.py` (if LUT image available)
 2. `transform.py`
 3. `overlay.py`
-4. `rank_candidate_pairs.py` — only when the auto-picked pair has zero overlap; otherwise skip.
+4. `rank_candidate_pairs.py` 鈥?only when the auto-picked pair has zero overlap; otherwise skip.
 
 The `combine_report.json` is a multi-writer file: ecc_register creates it, transform adds to it, overlay adds to it. Each script reads the existing file and appends its section. `rank_candidate_pairs.py` writes a separate `candidate_ranking.json` and does not touch `combine_report.json`.
 
 ## Output Files
 
 All outputs go in the combine output directory:
-- `traces.json` — the main pipeline output consumed by review and commit
-- `combine_report.json` — metadata for diagnostics
-- `candidate_ranking.json` — (optional) ranking of candidate material pairs
+- `traces.json` 鈥?the main pipeline output consumed by review and commit
+- `combine_report.json` 鈥?metadata for diagnostics
+- `candidate_ranking.json` 鈥?(optional) ranking of candidate material pairs
 - Per-material transformed masks and overlay images

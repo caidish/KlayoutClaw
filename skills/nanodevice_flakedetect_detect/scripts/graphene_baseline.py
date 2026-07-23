@@ -5,7 +5,7 @@ The top_part image shows the graphene flake on PDMS before transfer.
 The flake appears as a brighter / more saturated region against dark
 PDMS background. Within the flake, graphene is the brightest sub-region.
 
-Two-pass workflow (same pattern as align sweep → refine):
+Two-pass workflow (same pattern as align sweep 鈫?refine):
   1. First run: auto-selects brightest sub-cluster, saves candidate
      images for each sub-cluster so the agent can review.
   2. If agent disagrees: re-run with --cluster-id to pick the correct one.
@@ -274,7 +274,7 @@ def main():
                     "cluster_id": result["selected_id"]}, f, indent=2)
 
     print(f"\nOK: graphene detected (sub-cluster {result['selected_id']})")
-    print(f"  Area: {area_px} px ({area_um2} um²)")
+    print(f"  Area: {area_px} px ({area_um2} um虏)")
     print(f"  Contour points: {len(contour_2d)}")
     print(f"  Mirror: {args.mirror}")
     print(f"  Outputs: {args.output_dir}")

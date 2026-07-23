@@ -3,7 +3,7 @@
 
 Reads traces.json (all contours in full_stack pixel coordinates) and draws
 coloured contours on desaturated background images. For LUT overlays, reads
-the raw→LUT spatial shift from combine_report.json.
+the raw鈫扡UT spatial shift from combine_report.json.
 
 Usage:
     conda run -n instrMCPdev python overlay.py \
@@ -36,7 +36,7 @@ def draw_overlay(image, traces, thickness=2, label=True):
 
     Args:
         image: BGR image (uint8).
-        traces: Traces dict with materials → contour_px.
+        traces: Traces dict with materials 鈫?contour_px.
         thickness: Contour line thickness.
         label: If True, draw material name labels near centroids.
 
@@ -70,8 +70,8 @@ def draw_overlay_on_lut(lut_image, traces, dx, dy, thickness=2):
     Args:
         lut_image: BGR LUT image (uint8).
         traces: Traces dict with contours in raw coordinates.
-        dx: Horizontal shift raw → LUT (pixels).
-        dy: Vertical shift raw → LUT (pixels).
+        dx: Horizontal shift raw 鈫?LUT (pixels).
+        dy: Vertical shift raw 鈫?LUT (pixels).
         thickness: Contour line thickness.
 
     Returns:
@@ -131,7 +131,7 @@ def main():
     parser.add_argument("--lut", default=None,
                         help="Full stack LUT image (optional)")
     parser.add_argument("--combine-report", default=None,
-                        help="Path to combine_report.json (for raw→LUT dx/dy)")
+                        help="Path to combine_report.json (for raw鈫扡UT dx/dy)")
     parser.add_argument("--output-dir", required=True,
                         help="Output directory")
     args = parser.parse_args()
