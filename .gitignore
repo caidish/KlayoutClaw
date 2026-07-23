@@ -20,3 +20,9 @@ Submission/
 # Local agent configuration
 .agents/
 .codex/
+
+# Optional SAM2 model weights and local checkout artifacts
+/tools/sam2-main/model/*.pt
+/tools/sam2-main/model/*.pth
+/tools/sam2-main/checkpoints/*.pt
+/tools/sam2-main/checkpoints/*.pth

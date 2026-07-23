@@ -154,7 +154,8 @@ def build_detections_json(detect_dir, align_dir, pixel_size="0.087"):
         else:
             prefix = mat_name.lower()
 
-        materials[mat_name] = {
+        selected = result.get("selected") or {}
+        material_entry = {
             "mask_file": f"{prefix}_mask.png",
             "contour_file": f"{prefix}_contour.npy",
             "area_px": result["area_px"],
@@ -162,6 +163,16 @@ def build_detections_json(detect_dir, align_dir, pixel_size="0.087"):
             "coordinate_system": coord_sys,
             "mirrored": mirrored,
         }
+        if "candidate_masks_file" in result:
+            material_entry["candidate_masks_file"] = result["candidate_masks_file"]
+        if "selected_rank" in result:
+            material_entry["selected_rank"] = result["selected_rank"]
+        elif isinstance(selected, dict) and "rank" in selected:
+            material_entry["selected_rank"] = selected["rank"]
+        if isinstance(selected, dict) and "score" in selected:
+            material_entry["selected_score"] = selected["score"]
+
+        materials[mat_name] = material_entry
 
     detections = {
         "pixel_size_um": float(pixel_size),

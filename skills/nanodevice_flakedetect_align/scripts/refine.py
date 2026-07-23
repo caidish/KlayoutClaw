@@ -26,6 +26,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "nanodevi
 from core import make_warp, warp_contour, desaturate, mask_centroid
 
 
+def largest_contour_from_mask(mask):
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+    return max(contours, key=cv2.contourArea).reshape(-1, 2).astype(np.float64)
+
+
 class FastChamferAligner:
     """ChamferAligner with downsampled masks for fast cost evaluation.
 
@@ -253,6 +262,10 @@ def main():
     parser.add_argument("--footprint-contour", required=True)
     parser.add_argument("--footprint-mask", required=True)
     parser.add_argument("--target-image", required=True)
+    parser.add_argument("--align-target-mask", default=None,
+                        help="Optional target mask for choosing rotation/scale (e.g. 02_diff_target_mask.png).")
+    parser.add_argument("--align-target-image", default=None,
+                        help="Optional image used for final alignment diagnostics.")
     parser.add_argument("--rot-hint", type=float, required=True,
                         help="Agent-selected rotation (degrees)")
     parser.add_argument("--scale-hint", type=float, default=None,
@@ -272,13 +285,34 @@ def main():
         print("ERROR: Cannot read one or more input files.", file=sys.stderr)
         sys.exit(1)
 
+    align_target_mask = footprint_mask
+    align_target_contour = footprint_contour
+    align_target_name = "footprint"
+    diag_img = target_img
+    if args.align_target_mask:
+        align_target_mask = cv2.imread(args.align_target_mask, cv2.IMREAD_GRAYSCALE)
+        if align_target_mask is None:
+            print(f"ERROR: Cannot read align target mask: {args.align_target_mask}",
+                  file=sys.stderr)
+            sys.exit(1)
+        align_target_contour = largest_contour_from_mask(align_target_mask)
+        if align_target_contour is None:
+            print(f"ERROR: Empty align target mask: {args.align_target_mask}",
+                  file=sys.stderr)
+            sys.exit(1)
+        align_target_name = os.path.basename(args.align_target_mask)
+        if args.align_target_image:
+            img = cv2.imread(args.align_target_image)
+            if img is not None:
+                diag_img = img
+
     os.makedirs(args.output_dir, exist_ok=True)
-    h, w = footprint_mask.shape[:2]
+    h, w = align_target_mask.shape[:2]
 
     # Build fast aligner (downsampled masks)
     aligner = FastChamferAligner(
         source_contour, source_mask,
-        footprint_contour, footprint_mask,
+        align_target_contour, align_target_mask,
         n_source_pts=600, n_fp_pts=800, ds_factor=4
     )
 
@@ -412,15 +446,15 @@ def main():
     np.save(warp_path, warp_matrix)
 
     # Generate diagnostic images
-    overlay, _ = draw_overlay_raw(target_img, source_contour, footprint_contour,
+    overlay, _ = draw_overlay_raw(diag_img, source_contour, align_target_contour,
                                   final_params, aligner, args.pixel_size)
     cv2.imwrite(os.path.join(args.output_dir, "20_best_overlay_raw.png"), overlay)
 
-    mask_ov = draw_mask_overlap(target_img, source_mask, footprint_mask,
+    mask_ov = draw_mask_overlap(diag_img, source_mask, align_target_mask,
                                 final_params, aligner, metrics)
     cv2.imwrite(os.path.join(args.output_dir, "21_mask_overlap.png"), mask_ov)
 
-    chamfer_hm = draw_chamfer_heatmap(target_img, source_contour, footprint_contour,
+    chamfer_hm = draw_chamfer_heatmap(diag_img, source_contour, align_target_contour,
                                       final_params, aligner, args.pixel_size)
     cv2.imwrite(os.path.join(args.output_dir, "22_chamfer_heatmap.png"), chamfer_hm)
 
@@ -439,6 +473,7 @@ def main():
 
     report["alignments"]["top"] = {
         "method": "chamfer",
+        "alignment_target": align_target_name,
         "warp_file": "warp_top.npy",
         "rotation_deg": metrics["rot_deg"],
         "scale": metrics["scale"],

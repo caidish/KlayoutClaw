@@ -35,16 +35,25 @@ Warp resolution (issue #31):
 
 import argparse
 import json
+import math
 import os
 import sys
 from itertools import combinations
 
 import cv2
 import numpy as np
+from scipy.optimize import differential_evolution
 from sklearn.cluster import KMeans
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "nanodevice_flakedetect", "scripts"))
-from core import morph_clean, flood_fill_holes, keep_largest_n, mask_centroid
+from core import (
+    ChamferAligner,
+    make_warp,
+    morph_clean,
+    flood_fill_holes,
+    keep_largest_n,
+    mask_centroid,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +149,41 @@ def load_warp_matrix(path):
     return M.astype(np.float64)
 
 
-def compute_diff_image(target_bgr, bottom_bgr, warp_matrix):
+def target_corner_gray_mean_bgr(target_bgr, corner_frac=0.08):
+    """Mean BGR color from low-saturation gray pixels in full_stack corners."""
+    h, w = target_bgr.shape[:2]
+    ph = max(8, int(round(h * corner_frac)))
+    pw = max(8, int(round(w * corner_frac)))
+    patches = [
+        target_bgr[:ph, :pw],
+        target_bgr[:ph, w - pw:],
+        target_bgr[h - ph:, :pw],
+        target_bgr[h - ph:, w - pw:],
+    ]
+    corner_pixels = np.concatenate(
+        [p.reshape(-1, target_bgr.shape[2]) for p in patches], axis=0
+    )
+    hsv = cv2.cvtColor(corner_pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV)
+    sat = hsv[:, 0, 1]
+    val = hsv[:, 0, 2]
+    gray_pixels = corner_pixels[(sat <= 35) & (val >= 20)]
+    if gray_pixels.size == 0:
+        gray_pixels = corner_pixels
+    return gray_pixels.reshape(-1, target_bgr.shape[2]).mean(axis=0)
+
+
+def compute_diff_image(target_bgr, bottom_bgr, warp_matrix,
+                       source_bgr=None, source_mask=None):
     h, w = target_bgr.shape[:2]
     warped = cv2.warpAffine(bottom_bgr, warp_matrix, (w, h))
+    valid_src = np.full(bottom_bgr.shape[:2], 255, dtype=np.uint8)
+    overlap = cv2.warpAffine(
+        valid_src, warp_matrix, (w, h), flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
+    fill = target_corner_gray_mean_bgr(target_bgr)
+    warped = warped.copy()
+    warped[overlap == 0] = np.clip(fill, 0, 255).astype(np.uint8)
 
     target_lab = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     warped_lab = cv2.cvtColor(warped, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -250,6 +291,110 @@ def filter_clusters_diff(label_map, diff_gray, n_clusters):
             continue
         candidates.append(cid)
     return candidates
+
+
+def diff_response_mask(diff_gray, source_area):
+    """Build a target mask from high-response diff regions."""
+    nonzero = diff_gray[diff_gray > 0]
+    if nonzero.size == 0:
+        return np.zeros_like(diff_gray)
+    thr = max(15, float(np.percentile(nonzero, 85)))
+    mask = np.where(diff_gray >= thr, 255, 0).astype(np.uint8)
+    mask = morph_clean(mask, close_k=11, open_k=5)
+    min_area = max(1000, int(source_area / 24))
+    mask = keep_largest_n(mask, n=8, min_area=min_area)
+    mask = flood_fill_holes(mask)
+    return mask
+
+
+def _resize_contour(contour, scale):
+    pts = np.asarray(contour, dtype=np.float64).reshape(-1, 2)
+    return pts * scale
+
+
+def draw_source_diff_candidate(diff_gray, target_contour, seed):
+    """Draw source-diff footprint candidate over the diff image."""
+    diff_vis = cv2.cvtColor(diff_gray, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(diff_vis, [target_contour], -1, (255, 0, 255), 1)
+    seed_contours, _ = cv2.findContours(seed, cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE)
+    if seed_contours:
+        cv2.drawContours(diff_vis, seed_contours, -1, (0, 255, 255), 2)
+    return diff_vis
+
+
+def align_source_to_diff_footprint(source_contour, source_mask, diff_gray,
+                                   source_area, pixel_size):
+    """Align top source shape directly to high-response diff mask."""
+    target_mask = diff_response_mask(diff_gray, source_area)
+    contours, _ = cv2.findContours(target_mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    target_contour = np.vstack(contours)
+    ds = 0.5
+    ds_source_mask = cv2.resize(
+        source_mask,
+        (int(source_mask.shape[1] * ds), int(source_mask.shape[0] * ds)),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    ds_target_mask = cv2.resize(
+        target_mask,
+        (int(target_mask.shape[1] * ds), int(target_mask.shape[0] * ds)),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    aligner = ChamferAligner(
+        _resize_contour(source_contour, ds),
+        ds_source_mask,
+        _resize_contour(target_contour, ds),
+        ds_target_mask,
+        n_source_pts=300,
+        n_fp_pts=500,
+    )
+
+    h, w = ds_target_mask.shape[:2]
+    results = []
+    for rot in np.arange(-180, 180, 12):
+        bounds = [(rot, rot), (0.3, 2.0), (-w / 2, w / 2), (-h / 2, h / 2)]
+        de = differential_evolution(
+            aligner.cost, bounds=bounds, maxiter=60, popsize=12,
+            seed=42, tol=1e-4, polish=False,
+        )
+        results.append(de)
+    best = min(results, key=lambda r: r.fun)
+    rot, scale, dx, dy = best.x
+    full_dx = dx / ds
+    full_dy = dy / ds
+    src_cx, src_cy = mask_centroid(source_mask)
+    tgt_cx, tgt_cy = mask_centroid(target_mask)
+    M = make_warp(src_cx, src_cy, tgt_cx + full_dx, tgt_cy + full_dy,
+                  math.radians(rot), scale)
+    out_h, out_w = diff_gray.shape[:2]
+    seed = cv2.warpAffine(source_mask, M, (out_w, out_h),
+                          flags=cv2.INTER_NEAREST)
+    seed = morph_clean(seed, close_k=11, open_k=5)
+    seed = flood_fill_holes(seed)
+    n_points, area_px, area_frac = evaluate_footprint(seed, out_h, out_w)
+    return {
+        "target_mask": target_mask,
+        "target_contour": target_contour,
+        "seed": seed,
+        "overlay": draw_source_diff_candidate(diff_gray, target_contour, seed),
+        "rot": float(rot),
+        "scale": float(scale),
+        "dx": float(full_dx),
+        "dy": float(full_dy),
+        "cost": float(best.fun),
+        "info": {
+            "attempt": 1,
+            "erode_size": 0,
+            "dilate_size": 0,
+            "n_points": int(n_points),
+            "area_px": int(area_px),
+            "area_frac": float(area_frac),
+            "gate_pass": bool(n_points >= 8 and area_px > 0 and area_frac < 0.85),
+        },
+    }
 
 
 def split_clusters(label_map, candidate_ids, source_area):
@@ -528,6 +673,8 @@ def main():
     parser.add_argument("--pixel-size", type=float, required=True)
     parser.add_argument("--n-clusters", type=int, default=12)
     parser.add_argument("--candidate-rank", type=int, default=1)
+    parser.add_argument("--source-diff-align", action="store_true",
+                        help="Experimental: align source mask directly to diff response before footprint refinement.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--warp", default=None,
@@ -558,6 +705,8 @@ def main():
             print("ERROR: Cannot read pre-computed source contour/mask.",
                   file=sys.stderr)
             sys.exit(1)
+        if args.mirror:
+            source_img = cv2.flip(source_img, 1)
         source_contour = source_contour.reshape(-1, 1, 2)
     else:
         if args.mirror:
@@ -613,8 +762,66 @@ def main():
             sys.exit(1)
         print(f"[B1] SIFT: {n_inliers} inliers")
 
-    diff_gray = compute_diff_image(target_img, bottom_img, warp_matrix)
+    diff_gray = compute_diff_image(
+        target_img, bottom_img, warp_matrix,
+        source_bgr=source_img, source_mask=source_mask,
+    )
     cv2.imwrite(os.path.join(args.output_dir, "02_diff_image.png"), diff_gray)
+
+    if args.source_diff_align:
+        print("[B1] Source-to-diff footprint alignment...")
+        aligned = align_source_to_diff_footprint(
+            source_contour, source_mask, diff_gray, source_area,
+            args.pixel_size,
+        )
+        if aligned is None:
+            emit_failure(report_path, "source-to-diff alignment failed",
+                         target_h, target_w)
+            print("ERROR: Source-to-diff alignment failed.", file=sys.stderr)
+            sys.exit(1)
+        cv2.imwrite(os.path.join(args.output_dir, "02_diff_target_mask.png"),
+                    aligned["target_mask"])
+        cv2.imwrite(os.path.join(args.output_dir, "03_footprint_candidates.png"),
+                    aligned["overlay"])
+
+        fp_mask, attempt, fp_info, border_px = grabcut_with_quality_retry(
+            target_img, aligned["seed"], target_h, target_w
+        )
+        fp_area = int((fp_mask > 0).sum())
+        if fp_area == 0:
+            emit_failure(report_path, "empty source-to-diff footprint",
+                         target_h, target_w, fp_info)
+            print("ERROR: Empty source-to-diff footprint.", file=sys.stderr)
+            sys.exit(1)
+        cv2.imwrite(os.path.join(args.output_dir, "footprint_mask.png"), fp_mask)
+        contours, _ = cv2.findContours(fp_mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        largest = max(contours, key=cv2.contourArea)
+        fp_pts = largest.reshape(-1, 2).astype(np.float64)
+        np.save(os.path.join(args.output_dir, "footprint_contour.npy"), fp_pts)
+        diag = target_img.copy()
+        cv2.drawContours(diag, [largest], -1, (0, 255, 0), 2)
+        cv2.imwrite(os.path.join(args.output_dir, "04_footprint_grabcut.png"),
+                    diag)
+        n_points = len(largest)
+        emit_success(report_path, fp_info, target_h, target_w,
+                     ["source_diff_align"], fp_area, fp_area,
+                     aligned["cost"], n_points,
+                     "footprint_mask.png", "footprint_contour.npy",
+                     args.target, args.pixel_size, attempt, border_px)
+        report = _read_report(report_path)
+        report["footprint"].update({
+            "mode": "source_diff_align",
+            "rot_deg": round(float(aligned["rot"]), 4),
+            "scale": round(float(aligned["scale"]), 6),
+            "dx_px": round(float(aligned["dx"]), 3),
+            "dy_px": round(float(aligned["dy"]), 3),
+        })
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"[B1] Source-diff align rot={aligned['rot']:.1f} "
+              f"s={aligned['scale']:.3f} cost={aligned['cost']:.1f}")
+        return 0
 
     n_clusters = args.n_clusters
     print(f"[B1] K-means clustering on diff (n={n_clusters})...")

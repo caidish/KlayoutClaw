@@ -85,12 +85,30 @@ Qlaybot ships its own MCP client and auto-launches KLayout. First run creates `~
 The MCP server itself uses only Python stdlib + KLayout's `pya`. Subprocess tools (`auto_route`, `evaluate_design`) and nanodevice skills need a scientific Python stack — we recommend a conda env named `instrMCPdev`:
 
 ```bash
+conda env create -f environment.yml
+conda activate instrMCPdev
+```
+
+Equivalent manual install:
+
+```bash
 conda create -n instrMCPdev python=3.11 -y && conda activate instrMCPdev
 pip install numpy scipy scikit-image scikit-learn opencv-python-headless \
-            gdstk shapely matplotlib klayout==0.30.3
+            gdstk shapely matplotlib klayout==0.30.3 pytest
 ```
 
 Pass `python_path=` to override the env per-call.
+
+### Optional SAM2 refinement
+
+`skills/nanodevice_flakedetect_sam` wraps the normal flake detectors and can generate prompt candidate overlays for SAM2-assisted refinement. The original detector output contract is preserved; if SAM2, PyTorch, or a checkpoint is missing, the wrapper records the failure in its JSON sidecar and falls back to the baseline detector result.
+
+To enable real SAM2 refinement, install PyTorch for your CUDA/CPU setup, place the SAM2 source checkout at `tools/sam2-main` or set `SAM2_ROOT`, and put the checkpoint at `tools/sam2-main/model/sam2.1_hiera_base_plus.pt`. Model weights are intentionally ignored by git; keep them outside normal commits or use Git LFS if the project decides to version them.
+
+Download sources:
+
+- SAM2 source: https://github.com/facebookresearch/sam2
+- SAM2.1 base-plus checkpoint: https://huggingface.co/facebook/sam2.1-hiera-base-plus/tree/main (`sam2.1_hiera_base_plus.pt`)
 
 ## Documentation
 
