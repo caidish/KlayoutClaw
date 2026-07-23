@@ -24,7 +24,7 @@ from core import morph_clean, flood_fill_holes, keep_largest_n, mask_centroid
 
 
 def _grabcut_refine_source(image, mask):
-    """GrabCut refinement for source flake — cleans edges to crystallographic facets."""
+    """GrabCut refinement for source flake 鈥?cleans edges to crystallographic facets."""
     h, w = image.shape[:2]
     erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
     dilate_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))
@@ -70,7 +70,7 @@ def segment_flake(image, gray_only=False):
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Otsu on grayscale — separates bright flake from dark background
+    # Otsu on grayscale 鈥?separates bright flake from dark background
     _, mask_gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     if gray_only:
@@ -79,7 +79,7 @@ def segment_flake(image, gray_only=False):
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         sat = hsv[:, :, 1]
 
-        # Otsu on saturation — separates colored flake from unsaturated substrate
+        # Otsu on saturation 鈥?separates colored flake from unsaturated substrate
         _, mask_sat = cv2.threshold(sat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         # Union: captures both thick (dark, high-sat) and thin (bright, low-sat) hBN

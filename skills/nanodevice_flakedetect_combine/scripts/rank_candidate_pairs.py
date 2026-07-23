@@ -5,7 +5,7 @@ to have no overlap.
 
 Context: flakedetect_detect produces candidate lists per material in raw
 detection order (not ranked). On ml09/ml11 benchmark runs, the auto-picked
-default pair had zero graphene∩graphite overlap, forcing agents to
+default pair had zero graphene鈭ゞraphite overlap, forcing agents to
 brute-force compare candidates before a usable Hall-bar geometry could even
 be designed. This script emits a precomputed ranking so the agent's first
 attempt is its best attempt.
@@ -17,7 +17,7 @@ Usage:
         [--top-k 5]
 
 Outputs:
-    candidate_ranking.json — ordered list of pairs with overlap area,
+    candidate_ranking.json 鈥?ordered list of pairs with overlap area,
         individual areas, and centroid distance.
 
 Dependencies: shapely (already present in instrMCPdev env).

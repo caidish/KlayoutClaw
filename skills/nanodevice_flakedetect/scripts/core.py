@@ -65,7 +65,7 @@ def morph_clean(mask, close_k=9, open_k=9):
 def flood_fill_holes(mask):
     """Fill interior holes in a binary mask.
 
-    Performs flood fill from the top-left corner on the inverted mask,
+    Performs flood fill from the four image corners on the inverted mask,
     then unions with the original to fill all enclosed holes.
 
     Args:
@@ -76,9 +76,12 @@ def flood_fill_holes(mask):
     """
     h, w = mask.shape[:2]
     flood = mask.copy()
-    fill_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
-    cv2.floodFill(flood, fill_mask, (0, 0), 255)
-    # Invert: holes that were NOT reached by flood from corner
+    for seed in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        x, y = seed
+        if flood[y, x] == 0:
+            fill_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+            cv2.floodFill(flood, fill_mask, seed, 255)
+    # Invert: holes that were NOT reached by flood from any corner
     holes = cv2.bitwise_not(flood)
     return cv2.bitwise_or(mask, holes)
 
@@ -332,6 +335,18 @@ def invert_warp(M):
 # Chamfer + containment cost function
 # ---------------------------------------------------------------------------
 
+def low_scale_penalty(scale, floor=0.75, weight=8000.0):
+    """Penalty for degenerate tiny-scale alignments.
+
+    Tiny scales can reduce Chamfer cost by matching only a local boundary
+    fragment. Penalize only below the scale floor so normal scale~=1 matches
+    are unaffected.
+    """
+    if scale >= floor:
+        return 0.0
+    return weight * ((floor - scale) / floor) ** 2
+
+
 class ChamferAligner:
     """Chamfer distance + containment cost function for cross-substrate alignment.
 
@@ -433,8 +448,8 @@ class ChamferAligner:
         outside = cv2.bitwise_and(warped_mask, cv2.bitwise_not(self.footprint_mask))
         outside_frac = (outside > 0).sum() / warped_area
 
-        # Combined cost: Chamfer + containment + OOB
-        return fwd + 3000.0 * outside_frac + 500.0 * oob_frac
+        # Combined cost: Chamfer + containment + OOB + low-scale guard
+        return fwd + 3000.0 * outside_frac + 500.0 * oob_frac + low_scale_penalty(scale)
 
     def evaluate(self, params, pixel_size_um=1.0):
         """Compute detailed alignment metrics for a given parameter set.

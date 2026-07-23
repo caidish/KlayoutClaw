@@ -77,23 +77,23 @@ The agent derives material analysis logic from its physics knowledge of the devi
 - A QD needs a gate-definable region
 - A JJ needs a superconductor-insulator-superconductor stack
 
-> ### ⚠️ Coordinate-frame contract (read before touching any flake coords)
+> ### 鈿狅笍 Coordinate-frame contract (read before touching any flake coords)
 >
 > If `nanodevice_gdsalign` has run, the flake polygons already committed in
-> KLayout (the flake layers — L10-L13 by default, but confirm the mapping from
+> KLayout (the flake layers 鈥?L10-L13 by default, but confirm the mapping from
 > your own commit) are in the **GDS reference frame** and are the **single
-> source of truth**. Build the device against THOSE — read them back with
+> source of truth**. Build the device against THOSE 鈥?read them back with
 > `pya.Region` in absolute coordinates; do not re-derive flake geometry from raw
 > JSON, and treat the committed flake layers as read-only reference (do not
 > clear and re-insert flakes from an image-frame source).
 >
 > - The ONLY valid JSON flake source after gdsalign is
->   `traces_gds.json` → per-entry **`contour_gds`**. **NEVER** read
+>   `traces_gds.json` 鈫?per-entry **`contour_gds`**. **NEVER** read
 >   `contour_um` (the un-warped image frame): it places the device hundreds of
 >   um off the GDS template and scores ~0 (the QH07 failure). Do not invent a
 >   `device_geom.json` with a hand-labeled `frame`.
 > - On **session recovery** (live layout empty / `result.gds` missing), rebuild
->   flakes from `traces_gds.json::contour_gds` ONLY — never from `contour_um`.
+>   flakes from `traces_gds.json::contour_gds` ONLY 鈥?never from `contour_um`.
 > - If the markers/flakes look off-frame, that is an alignment failure: re-run
 >   gdsalign (see its validated-commit contract), do not patch coordinates by
 >   hand.
@@ -121,19 +121,19 @@ Use `screenshot` after each major geometry addition to visually verify placement
 
 **Gate:** Device geometry is present on designated layers. Visual inspection via `screenshot` confirms correct placement.
 
-**Frame guard (mandatory):** before passing this gate, assert with `pya.Region` that the active region (mesa/channel) **overlaps the material region the device physics requires** — the SAME region you identified in ANALYZE (for a Hall bar that is the graphene∩graphite overlap; for a single-material device it is that one flake region; for a JJ/QD it is whatever its stack needs). Read those regions from the committed flake layers using the layer numbers YOU assigned (do not hard-code L11/L13 — confirm the mapping from your own commit). Procedure: (1) confirm the target flake layer(s) are **non-empty** — an absent material is a detection/commit problem, not a frame error, so skip the guard for it; (2) if the target region is non-empty but its overlap with the active region is empty, the device is in the **wrong frame** — STOP, fix the coordinate source (see the frame contract in ANALYZE) or re-run gdsalign, and do not proceed to ROUTE.
+**Frame guard (mandatory):** before passing this gate, assert with `pya.Region` that the active region (mesa/channel) **overlaps the material region the device physics requires** 鈥?the SAME region you identified in ANALYZE (for a Hall bar that is the graphene鈭ゞraphite overlap; for a single-material device it is that one flake region; for a JJ/QD it is whatever its stack needs). Read those regions from the committed flake layers using the layer numbers YOU assigned (do not hard-code L11/L13 鈥?confirm the mapping from your own commit). Procedure: (1) confirm the target flake layer(s) are **non-empty** 鈥?an absent material is a detection/commit problem, not a frame error, so skip the guard for it; (2) if the target region is non-empty but its overlap with the active region is empty, the device is in the **wrong frame** 鈥?STOP, fix the coordinate source (see the frame contract in ANALYZE) or re-run gdsalign, and do not proceed to ROUTE.
 
-> ### ⚠️ Material-containment guard — contacts/arm-tips must land ON the flake (not just the mesa body)
+> ### 鈿狅笍 Material-containment guard 鈥?contacts/arm-tips must land ON the flake (not just the mesa body)
 >
 > The frame guard above only checks that the mesa *body* overlaps the flake. It
 > does **not** catch a mesa whose **probe arms / contact patches extend PAST the
-> flake boundary** — the central body still overlaps, so the frame guard passes,
+> flake boundary** 鈥?the central body still overlaps, so the frame guard passes,
 > yet the arm-tip ohmic contacts sit in void and every material-keyed metric
 > (`contacts_in_regions`, `connectivity`, `mesa_probes`, `mesa_on_overlap`)
 > silently collapses. This is a distinct, common failure (it caps a structurally
 > clean, correctly-framed device well below where it should score).
 >
-> **Principle — material-correctness outranks cosmetic shape.** A device's
+> **Principle 鈥?material-correctness outranks cosmetic shape.** A device's
 > contacts and the arm tips that carry them MUST sit inside the required flake
 > region. **Never lengthen a probe arm past the flake edge to satisfy a shape
 > target** (e.g. a low-`solidity` / "make the mesa concave" goal). Solidity,
@@ -144,11 +144,10 @@ Use `screenshot` after each major geometry addition to visually verify placement
 > **Check before passing this gate** (in addition to the frame guard): with
 > `pya.Region`, intersect the **contact-patch** shapes (and the probe-arm tips,
 > if separate) with the required flake region. If any contact patch's in-flake
-> area fraction is below ~0.9, that arm is **over-extended** — pull it back so
+> area fraction is below ~0.9, that arm is **over-extended** 鈥?pull it back so
 > the patch is fully on the flake, then re-check. (Equivalently, once you have
 > committed flakes you can run `evaluate_design` with `arm_material_class` /
-> `component_containment` on the contact component and require a high fraction —
-> the same measurement the official scorer makes.) Do not proceed to ROUTE while
+> `component_containment` on the contact component and require a high fraction 鈥?> the same measurement the official scorer makes.) Do not proceed to ROUTE while
 > contacts hang off the flake.
 
 ---
@@ -203,7 +202,7 @@ The `region` arg can be a single layer_map key or a list of keys combined via `r
 > distinct ohmic materials, e.g. a Hall bar's graphene vs graphite contacts). A
 > route that crosses the opposing flake material is an electrical short and is a
 > common, easily-missed cause of a low score. The check returns `violating_routes`
-> [{route_id, contact_kind, crossed_material, area_um2}] — reroute each violator
+> [{route_id, contact_kind, crossed_material, area_um2}] 鈥?reroute each violator
 > (e.g. fan it out away from the opposing flake) and re-check, exactly as you use
 > `contact_isolation`'s `crossing_pairs` to fix route-route crossings.
 
@@ -234,9 +233,9 @@ Also take a `screenshot` for visual inspection.
 
 ## Step 7: SAVE
 
-> **BENCHMARK FORMAT WARNING**: If this task is a benchmark run, the required `result.json` schema is defined in the **task prompt itself**. Re-read the task prompt and use the exact schema it specifies. Do **NOT** fall back to the nested general-purpose format below — a schema mismatch makes the evaluator score 0.0.
+> **BENCHMARK FORMAT WARNING**: If this task is a benchmark run, the required `result.json` schema is defined in the **task prompt itself**. Re-read the task prompt and use the exact schema it specifies. Do **NOT** fall back to the nested general-purpose format below 鈥?a schema mismatch makes the evaluator score 0.0.
 
-> ### Save often — and make sure your BEST result is the one on disk
+> ### Save often 鈥?and make sure your BEST result is the one on disk
 >
 > Follow the benchmark's own rule: **save early, save often.** A partial result
 > always scores higher than no result; an agent that finishes a good device but
@@ -244,10 +243,10 @@ Also take a `screenshot` for visual inspection.
 >
 > 1. **Save as soon as you have a complete, routed device**, then **re-save
 >    whenever you reach a higher EVALUATE score.** Overwriting `output/result.gds`
->    is free — `save_layout` writes it atomically (temp + rename), so a verifier
+>    is free 鈥?`save_layout` writes it atomically (temp + rename), so a verifier
 >    never observes a half-written GDS; you do not need staging files.
 > 2. **Write `result.json` in the exact schema the task prompt specifies** (it is
->    usually a flat object with no `score` field — do not add one). Keep it in
+>    usually a flat object with no `score` field 鈥?do not add one). Keep it in
 >    sync with the saved GDS.
 > 3. **Don't let a later, worse iteration become the final artifact.** Only
 >    re-save when EVALUATE confirms the new design is at least as good; if an
@@ -257,7 +256,7 @@ Also take a `screenshot` for visual inspection.
 >    (a wedged bridge), call `ping` to check the server is alive, then re-save.
 
 1. Save your BEST design atomically per the save-best block above (stage `.new`, promote both with one `mv`).
-2. Write `result.json` — **check if the task or benchmark specifies a required format first and use that exactly**. If no format is specified, use this general-purpose default:
+2. Write `result.json` 鈥?**check if the task or benchmark specifies a required format first and use that exactly**. If no format is specified, use this general-purpose default:
 
 **General format (non-benchmark):**
    - `device_type`: from QUERY

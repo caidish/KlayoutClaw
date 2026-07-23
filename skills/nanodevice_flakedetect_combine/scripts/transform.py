@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Coordinate transforms: detection results → full_stack coordinate system.
+"""Coordinate transforms: detection results 鈫?full_stack coordinate system.
 
 Reads per-material detections from detections.json, applies the appropriate
 warp matrix to bring each material into the common full_stack frame, then
@@ -92,7 +92,7 @@ def _detect_dropped_stage(stage_counts):
     """Return the first stage where the pixel count fell to 0, or None.
 
     Stages are checked in pipeline order. ``input_pixels`` itself is not
-    a 'drop' stage — if the input is empty there is no dropping to report.
+    a 'drop' stage 鈥?if the input is empty there is no dropping to report.
     """
     if stage_counts.get("input_pixels", 0) <= 0:
         return None
@@ -116,12 +116,12 @@ def build_masks(detections, detect_dir, warp_bot_inv, warp_top, footprint,
     Args:
         detections: Parsed detections.json dict.
         detect_dir: Directory containing detection mask/contour files.
-        warp_bot_inv: 2x3 affine inverse warp (bottom_part → full_stack).
-        warp_top: 2x3 affine warp (top_part → full_stack).
+        warp_bot_inv: 2x3 affine inverse warp (bottom_part 鈫?full_stack).
+        warp_top: 2x3 affine warp (top_part 鈫?full_stack).
         footprint: Binary mask of top_hBN footprint in full_stack coords.
         image_size: Tuple (width, height) of the full_stack image.
         min_area: Minimum area in pixels for keep_largest_n on graphene.
-            Defaults to 500 px (≈ 5.6 µm² at 0.106 µm/px). Raise this to
+            Defaults to 500 px (鈮?5.6 碌m虏 at 0.106 碌m/px). Raise this to
             reject tiny noise components, lower it when working at a finer
             pixel size or with intentionally small flakes.
 
@@ -333,7 +333,7 @@ def main():
         "--min-area", type=int, default=500,
         help=(
             "Minimum component area in pixels for keep_largest_n on the "
-            "graphene mask. Default 500 px (≈ 5.6 µm² at 0.106 µm/px). "
+            "graphene mask. Default 500 px (鈮?5.6 碌m虏 at 0.106 碌m/px). "
             "Lower this when working at finer pixel sizes or with smaller "
             "flakes; raise it to reject more aggressive noise."
         ),
@@ -465,8 +465,8 @@ def main():
         report = {}
 
     report["transform_summary"] = {
-        "graphite": "bottom_part → full_stack via inverted warp_sift_bottom",
-        "graphene": "top_part(mirrored) → full_stack via warp_top (direct)",
+        "graphite": "bottom_part 鈫?full_stack via inverted warp_sift_bottom",
+        "graphene": "top_part(mirrored) 鈫?full_stack via warp_top (direct)",
         "bottom_hBN": "already in full_stack coords (pass-through)",
         "top_hBN": "already in full_stack coords (= footprint, pass-through)",
     }

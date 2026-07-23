@@ -6,9 +6,9 @@ and full_stack on SiO2) using SIFT feature matching. Falls back to
 ECC translation if too few SIFT matches.
 
 Exit codes:
-    0 — Alignment successful (>=20 inliers)
-    1 — Error
-    2 — Too few matches (<20 inliers) — use Chamfer pipeline instead
+    0 鈥?Alignment successful (>=20 inliers)
+    1 鈥?Error
+    2 鈥?Too few matches (<20 inliers) 鈥?use Chamfer pipeline instead
 
 Usage:
     conda run -n instrMCPdev python sift_align.py \
@@ -197,7 +197,7 @@ def main():
     else:
         quality = "insufficient"
 
-    print(f"SIFT: {n_inliers} inliers, scale={scale:.4f}, rot={rot_deg:.2f}°")
+    print(f"SIFT: {n_inliers} inliers, scale={scale:.4f}, rot={rot_deg:.2f}掳")
     print(f"Quality: {quality}")
 
     # Draw diagnostic
@@ -264,7 +264,7 @@ def main():
 
     # Exit code based on quality
     if quality == "insufficient":
-        print("Too few inliers — use Chamfer pipeline instead.")
+        print("Too few inliers 鈥?use Chamfer pipeline instead.")
         sys.exit(2)
 
     print(f"Saved: warp_sift_bottom.npy, 01_sift_matches.png, 01_sift_overlay.png")

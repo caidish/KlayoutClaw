@@ -15,15 +15,15 @@ Save the current KLayout layout to a temporary GDS file, convert it to PNG, and 
 
 ## Script
 
-### capture.py — Capture layout as PNG
+### capture.py 鈥?Capture layout as PNG
 
 ```bash
 python scripts/capture.py [--output path.png] [--gds path.gds] [--dpi 200]
 ```
 
-- `--output` — PNG output path. **If the user has a working directory or stack path, save there instead of `/tmp`.**
-- `--gds` — GDS output path. Same rule: prefer the user's working directory over `/tmp`.
-- `--dpi` — Image resolution (default: 200)
+- `--output` 鈥?PNG output path. **If the user has a working directory or stack path, save there instead of `/tmp`.**
+- `--gds` 鈥?GDS output path. Same rule: prefer the user's working directory over `/tmp`.
+- `--dpi` 鈥?Image resolution (default: 200)
 
 Returns the paths to both the GDS and PNG files, printed to stdout.
 

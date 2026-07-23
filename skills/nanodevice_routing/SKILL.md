@@ -16,24 +16,24 @@ Route nanodevice contacts to bonding pads, with multi-window EBL write field sup
 
 ## Scripts
 
-### place_pads.py — Place bonding pads around field perimeter
+### place_pads.py 鈥?Place bonding pads around field perimeter
 
 ```bash
 python scripts/place_pads.py --field 2000 --pad-size 80 --pads-per-edge 12 [--layer 2/0] [--margin 60]
 ```
 
-- `--field` — EBL write field size in um (default: 2000)
-- `--pad-size` — Bonding pad side length in um (default: 80)
-- `--pads-per-edge` — Number of pads per edge (default: 12)
-- `--layer` — Output layer as `layer/datatype` (default: 2/0)
-- `--margin` — Pad center inset from field edge in um (default: 60)
+- `--field` 鈥?EBL write field size in um (default: 2000)
+- `--pad-size` 鈥?Bonding pad side length in um (default: 80)
+- `--pads-per-edge` 鈥?Number of pads per edge (default: 12)
+- `--layer` 鈥?Output layer as `layer/datatype` (default: 2/0)
+- `--margin` 鈥?Pad center inset from field edge in um (default: 60)
 
-Example — 48 pads (12 per edge) around a 2mm field:
+Example 鈥?48 pads (12 per edge) around a 2mm field:
 ```bash
 python scripts/place_pads.py --field 2000 --pad-size 80 --pads-per-edge 12
 ```
 
-### route_multiwindow.py — Multi-window EBL routing
+### route_multiwindow.py 鈥?Multi-window EBL routing
 
 Routes device contacts to bonding pads in two passes with different line widths, placing connection patches at the window boundary.
 
@@ -52,28 +52,28 @@ python scripts/route_multiwindow.py \
     --obstacle-layers 1/0
 ```
 
-- `--pin-contacts` — Layer with pin markers at device contacts (default: 100/0)
-- `--pin-pads` — Layer with pin markers at bonding pads (default: 101/0)
-- `--inner-window` — Inner EBL window size in um (default: 800)
-- `--outer-window` — Outer EBL window size in um (default: 2000)
-- `--inner-width` — Route line width for inner window in um (default: 0.5)
-- `--outer-width` — Route line width for outer window in um (default: 1.0)
-- `--inner-layer` — Output layer for inner routes (default: 3/0)
-- `--outer-layer` — Output layer for outer routes (default: 4/0)
-- `--patch-layer` — Output layer for boundary patches (default: 5/0)
-- `--patch-size` — Boundary patch size in um (default: 1.0)
-- `--obstacle-layers` — Comma-separated obstacle layers (default: 1/0)
+- `--pin-contacts` 鈥?Layer with pin markers at device contacts (default: 100/0)
+- `--pin-pads` 鈥?Layer with pin markers at bonding pads (default: 101/0)
+- `--inner-window` 鈥?Inner EBL window size in um (default: 800)
+- `--outer-window` 鈥?Outer EBL window size in um (default: 2000)
+- `--inner-width` 鈥?Route line width for inner window in um (default: 0.5)
+- `--outer-width` 鈥?Route line width for outer window in um (default: 1.0)
+- `--inner-layer` 鈥?Output layer for inner routes (default: 3/0)
+- `--outer-layer` 鈥?Output layer for outer routes (default: 4/0)
+- `--patch-layer` 鈥?Output layer for boundary patches (default: 5/0)
+- `--patch-size` 鈥?Boundary patch size in um (default: 1.0)
+- `--obstacle-layers` 鈥?Comma-separated obstacle layers (default: 1/0)
 
 The script:
 1. Reads contact and pad pin positions from their layers
 2. Computes boundary intersection points at the inner window edge
 3. Places boundary pins on temporary layers
-4. Runs inner auto_route (contacts → boundary, fine lines)
+4. Runs inner auto_route (contacts 鈫?boundary, fine lines)
 5. Places connection patches at boundary points
-6. Runs outer auto_route (boundary → pads, coarse lines)
+6. Runs outer auto_route (boundary 鈫?pads, coarse lines)
 7. Cleans up temporary pin layers
 
-### clear_routes.py — Remove routes from specified layers
+### clear_routes.py 鈥?Remove routes from specified layers
 
 ```bash
 python scripts/clear_routes.py 3/0 4/0 5/0
@@ -87,7 +87,7 @@ Clears all shapes from the listed layers. Useful for re-routing without losing d
 2. Place pin markers at device contact tips on layer 100/0
 3. Place bonding pads with `place_pads.py` (also places pin markers on 101/0)
 4. Run `route_multiwindow.py` to connect everything
-5. Check result — if overlapping, adjust parameters and re-run after `clear_routes.py`
+5. Check result 鈥?if overlapping, adjust parameters and re-run after `clear_routes.py`
 
 ## Output Layers Convention
 
@@ -98,7 +98,7 @@ Clears all shapes from the listed layers. Useful for re-routing without losing d
 | 1/0 | Mesa (graphene etch) | Pass 1 |
 | 2/0 | Bonding pads | Pass 3 (coarse) |
 | 3/0 | Fine routes (<inner window) | Pass 2 (fine) |
-| 4/0 | Coarse routes (inner→outer) | Pass 3 (coarse) |
+| 4/0 | Coarse routes (inner鈫抩uter) | Pass 3 (coarse) |
 | 5/0 | Boundary patches | Pass 2 or 3 |
 | 100/0 | Pin markers: contacts | (removed after routing) |
 | 101/0 | Pin markers: pads | (removed after routing) |
@@ -118,28 +118,28 @@ When many contacts fan out from a small cluster (e.g. 8 ohmic contacts on a
 each contact ends up walled in by its sibling-contact pin markers plus the
 clearance halos of routes already laid, even though a legal, non-crossing path
 to the pad still exists. This capped connectivity (HM08 ended at 3/8 contacts
-routed → score 0.387 despite perfect placement).
+routed 鈫?score 0.387 despite perfect placement).
 
 `auto_route` now handles this automatically:
 
 - **Per-net rescue (on by default).** Any net that fails the first pathfinding
   pass is retried with a local, then global, relaxation that opens the
   clearance halos + sibling pin-markers blocking it while keeping every
-  already-routed path cell HARD — so the rescued lead reaches its pad without
+  already-routed path cell HARD 鈥?so the rescued lead reaches its pad without
   crossing any prior route. The response reports `rescued_nets` (how many nets
   needed the rescue) and a `rescue_note`. After a rescue, still run
   `route_inspect` / `evaluate_design` with `contact_isolation` to confirm no
-  crossings — the rescue is designed never to add one, but verify.
+  crossings 鈥?the rescue is designed never to add one, but verify.
 - The rescue is a strict no-op on layouts that already route fully, so it never
   perturbs clean cases.
 
-If a net still fails after the rescue (genuine over-saturation — a contact
+If a net still fails after the rescue (genuine over-saturation 鈥?a contact
 sitting directly on top of a prior route), drop the assignment with
 `pin_pairs_override` to a topology with more corridor room, widen the field, or
 fall back to the manual L-route below for that one lead. Do **not** reflexively
 lower `map_resolution`: a finer grid does **not** reliably improve dense-fan-out
-connectivity and costs ~4x runtime per halving (≈4 s → 15 s → 66 s at
-2.0 → 1.0 → 0.5 um on a 2 mm field). Use `auto_map_resolution=true` only when
+connectivity and costs ~4x runtime per halving (鈮? s 鈫?15 s 鈫?66 s at
+2.0 鈫?1.0 鈫?0.5 um on a 2 mm field). Use `auto_map_resolution=true` only when
 contacts are genuinely small (~3 um) and the default under-resolves them.
 
 ## Known Limitations
