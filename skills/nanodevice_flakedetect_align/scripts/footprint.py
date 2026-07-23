@@ -592,6 +592,8 @@ def main():
             print("ERROR: Cannot read pre-computed source contour/mask.",
                   file=sys.stderr)
             sys.exit(1)
+        if args.mirror:
+            source_img = cv2.flip(source_img, 1)
         source_contour = source_contour.reshape(-1, 1, 2)
     else:
         if args.mirror:

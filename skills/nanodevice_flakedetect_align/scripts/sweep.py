@@ -28,6 +28,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "nanodevi
 from core import ChamferAligner, make_warp, warp_contour, desaturate, mask_centroid
 
 
+def largest_contour_from_mask(mask):
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+    return max(contours, key=cv2.contourArea).reshape(-1, 2).astype(np.float64)
+
+
 def downsample_mask(mask, scale=0.5):
     """Downsample a binary mask by the given scale factor."""
     h, w = mask.shape[:2]
@@ -76,6 +85,10 @@ def main():
     parser.add_argument("--footprint-contour", required=True, help="footprint_contour.npy")
     parser.add_argument("--footprint-mask", required=True, help="footprint_mask.png")
     parser.add_argument("--target-image", required=True, help="full_stack image for overlays")
+    parser.add_argument("--align-target-mask", default=None,
+                        help="Optional target mask for choosing rotation/scale (e.g. 02_diff_target_mask.png).")
+    parser.add_argument("--align-target-image", default=None,
+                        help="Optional image used as candidate background when --align-target-mask is set.")
     parser.add_argument("--pixel-size", type=float, required=True, help="um/px")
     parser.add_argument("--output-dir", required=True, help="Output directory")
     args = parser.parse_args()
@@ -91,14 +104,35 @@ def main():
         print("ERROR: Cannot read one or more input files.", file=sys.stderr)
         sys.exit(1)
 
+    align_target_mask = footprint_mask
+    align_target_contour = footprint_contour
+    align_target_name = "footprint"
+    candidate_bg = target_img
+    if args.align_target_mask:
+        align_target_mask = cv2.imread(args.align_target_mask, cv2.IMREAD_GRAYSCALE)
+        if align_target_mask is None:
+            print(f"ERROR: Cannot read align target mask: {args.align_target_mask}",
+                  file=sys.stderr)
+            sys.exit(1)
+        align_target_contour = largest_contour_from_mask(align_target_mask)
+        if align_target_contour is None:
+            print(f"ERROR: Empty align target mask: {args.align_target_mask}",
+                  file=sys.stderr)
+            sys.exit(1)
+        align_target_name = os.path.basename(args.align_target_mask)
+        if args.align_target_image:
+            align_img = cv2.imread(args.align_target_image)
+            if align_img is not None:
+                candidate_bg = align_img
+
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Downsample for speed
     ds = 0.5
     ds_source_mask = downsample_mask(source_mask, ds)
-    ds_footprint_mask = downsample_mask(footprint_mask, ds)
+    ds_footprint_mask = downsample_mask(align_target_mask, ds)
     ds_source_contour = downsample_contour(source_contour, ds)
-    ds_footprint_contour = downsample_contour(footprint_contour, ds)
+    ds_footprint_contour = downsample_contour(align_target_contour, ds)
 
     ds_h, ds_w = ds_footprint_mask.shape[:2]
 
@@ -199,9 +233,9 @@ def main():
     top = results[:n_candidates]
 
     # Scale params back to full resolution for visualization and reporting
-    full_h, full_w = footprint_mask.shape[:2]
+    full_h, full_w = align_target_mask.shape[:2]
     src_centroid = mask_centroid(source_mask)
-    fp_centroid = mask_centroid(footprint_mask)
+    fp_centroid = mask_centroid(align_target_mask)
 
     print(f"\nTop {n_candidates} candidates:")
     candidate_images = []
@@ -219,7 +253,7 @@ def main():
 
         # Draw candidate overlay at full resolution
         img = draw_candidate(
-            target_img, source_contour, footprint_contour,
+            candidate_bg, source_contour, align_target_contour,
             full_params, src_centroid[0], src_centroid[1],
             fp_centroid[0], fp_centroid[1]
         )
@@ -269,6 +303,7 @@ def main():
         for i, r in enumerate(top)
     ]
     report["sweep_time_sec"] = round(total_time, 1)
+    report["sweep_alignment_target"] = align_target_name
 
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
