@@ -103,7 +103,11 @@ Pass `python_path=` to override the env per-call.
 
 `skills/nanodevice_flakedetect_sam` wraps the normal flake detectors and can generate prompt candidate overlays for SAM2-assisted refinement. The original detector output contract is preserved; if SAM2, PyTorch, or a checkpoint is missing, the wrapper records the failure in its JSON sidecar and falls back to the baseline detector result.
 
-To enable real SAM2 refinement, install PyTorch for your CUDA/CPU setup, place the SAM2 source checkout at `tools/sam2-main` or set `SAM2_ROOT`, and put the checkpoint at `tools/sam2-main/model/sam2.1_hiera_base_plus.pt`. Model weights are intentionally ignored by git; keep them outside normal commits or use Git LFS if the project decides to version them.
+To enable real SAM2 refinement, install PyTorch for your CUDA/MPS/CPU setup, place the SAM2 source checkout at `tools/sam2-main` or set `SAM2_ROOT`, and put the checkpoint at `tools/sam2-main/model/sam2.1_hiera_base_plus.pt`. Model weights are intentionally ignored by git; keep them outside normal commits or use Git LFS if the project decides to version them.
+
+SAM2 device selection defaults to CUDA, then Apple Metal/MPS, then CPU. Use
+`--sam-device` or `SAM2_DEVICE` to override it. MPS inference enables PyTorch's
+CPU operator fallback automatically for Metal operations that are unavailable.
 
 Download sources:
 

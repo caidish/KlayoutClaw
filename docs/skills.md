@@ -453,6 +453,10 @@ Graphene emits candidate overlays such as `graphene_candidate_01_on_grid.png` pl
 
 If SAM2 is unavailable, the wrapper does not block the pipeline: it records the reason and returns the baseline detector result.
 
+Device selection defaults to CUDA, then Apple Metal/MPS, then CPU. Override it
+with `--sam-device cuda|mps|cpu|auto` or `SAM2_DEVICE`. MPS inference enables
+PyTorch's CPU operator fallback for Metal operations that are unavailable.
+
 Download the optional pieces from:
 
 - SAM2 source: https://github.com/facebookresearch/sam2

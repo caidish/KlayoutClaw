@@ -13,6 +13,12 @@ Default files:
 - config: `configs/sam2.1/sam2.1_hiera_b+.yaml`
 - checkpoint: `model/sam2.1_hiera_base_plus.pt`
 
+Device selection defaults to `auto`, in this order: CUDA, Apple Metal/MPS,
+CPU. Override it with `--sam-device cuda|mps|cpu|auto` or the `SAM2_DEVICE`
+environment variable. MPS runs enable `PYTORCH_ENABLE_MPS_FALLBACK=1` before
+PyTorch is imported, allowing unsupported Metal operators to run on CPU. The
+selected device and fallback state are recorded in the prompt sidecar.
+
 Run with `--use-sam2` to attempt SAM2 refinement. If import or checkpoint
 loading fails, the wrapper falls back to the baseline mask and records the
 failure in `<material>_prompt_candidates.json`.

@@ -21,6 +21,7 @@ REPO_SAM_ROOT = REPO_ROOT / "tools" / "sam2-main"
 LEGACY_SAM_ROOT = Path("D:/Users/liyiz/desktop_backup/shixi/sam2-main")
 DEFAULT_SAM_CONFIG = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 DEFAULT_SAM_CHECKPOINT = "model/sam2.1_hiera_base_plus.pt"
+SAM_DEVICE_CHOICES = ("auto", "cuda", "mps", "cpu")
 
 
 def default_sam_root() -> Path:
@@ -30,6 +31,37 @@ def default_sam_root() -> Path:
     if REPO_SAM_ROOT.exists():
         return REPO_SAM_ROOT
     return LEGACY_SAM_ROOT
+
+
+def _backend_available(backend: Any) -> bool:
+    check = getattr(backend, "is_available", None)
+    return bool(check is not None and check())
+
+
+def select_sam_device(torch_module: Any, requested: str = "auto") -> str:
+    """Resolve a SAM inference device without importing torch at module load."""
+    requested = requested.lower()
+    if requested not in SAM_DEVICE_CHOICES:
+        raise ValueError(
+            f"unsupported SAM device {requested!r}; choose from {SAM_DEVICE_CHOICES}"
+        )
+
+    cuda_available = _backend_available(getattr(torch_module, "cuda", None))
+    backends = getattr(torch_module, "backends", None)
+    mps_available = _backend_available(getattr(backends, "mps", None))
+
+    if requested == "auto":
+        if cuda_available:
+            return "cuda"
+        if mps_available:
+            return "mps"
+        return "cpu"
+    if requested == "cuda" and not cuda_available:
+        raise RuntimeError("CUDA was requested for SAM2 but is not available")
+    if requested == "mps" and not mps_available:
+        raise RuntimeError("MPS was requested for SAM2 but is not available")
+    return requested
+
 
 MATERIAL_FILES = {
     "graphite": ("graphite_mask.png", "graphite_contour.npy", "graphite_result.json"),
@@ -64,6 +96,12 @@ def build_parser(material: str) -> argparse.ArgumentParser:
     p.add_argument("--sam-root", default=str(default_sam_root()))
     p.add_argument("--sam-config", default=DEFAULT_SAM_CONFIG)
     p.add_argument("--sam-checkpoint", default=DEFAULT_SAM_CHECKPOINT)
+    p.add_argument(
+        "--sam-device",
+        choices=SAM_DEVICE_CHOICES,
+        default=os.environ.get("SAM2_DEVICE", "auto").lower(),
+        help="SAM2 inference device (default: auto, preferring CUDA then MPS)",
+    )
     p.add_argument("--graphite-prior-mask", type=Path, default=None)
     p.add_argument("--warp-sift-bottom", type=Path, default=None)
     p.add_argument("--warp-top", type=Path, default=None)
@@ -755,12 +793,20 @@ def _contour_from_mask(mask: np.ndarray) -> np.ndarray:
 
 
 def _try_sam2(image: np.ndarray, candidate: dict[str, Any], args: argparse.Namespace) -> tuple[np.ndarray | None, dict[str, Any]]:
-    info: dict[str, Any] = {"attempted": True}
+    requested_device = getattr(args, "sam_device", "auto").lower()
+    info: dict[str, Any] = {
+        "attempted": True,
+        "requested_device": requested_device,
+    }
     sam_root = Path(args.sam_root)
     checkpoint = sam_root / args.sam_checkpoint
     if not sam_root.exists() or not checkpoint.exists():
         info["status"] = "missing_sam_root_or_checkpoint"
         return None, info
+    # PyTorch must see this before its MPS backend is initialized. Unsupported
+    # Metal operators can then execute on CPU while the rest stays on MPS.
+    if requested_device in {"auto", "mps"}:
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     import operator  # noqa: F401
     sys.path.insert(0, str(sam_root))
     try:
@@ -772,16 +818,21 @@ def _try_sam2(image: np.ndarray, candidate: dict[str, Any], args: argparse.Names
         info["error"] = repr(exc)
         return None, info
     try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = select_sam_device(torch, requested_device)
+        info["device"] = device
+        if device == "mps":
+            info["mps_cpu_fallback_enabled"] = (
+                os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") == "1"
+            )
         model = build_sam2(args.sam_config, str(checkpoint), device=device)
         predictor = SAM2ImagePredictor(model)
-        predictor.set_image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        pts = np.array(candidate["positive_points"] + candidate["negative_points"], dtype=np.float32)
-        labels = np.array([1] * len(candidate["positive_points"]) + [0] * len(candidate["negative_points"]), dtype=np.int32)
-        masks, scores, _ = predictor.predict(point_coords=pts, point_labels=labels, multimask_output=False)
+        with torch.inference_mode():
+            predictor.set_image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            pts = np.array(candidate["positive_points"] + candidate["negative_points"], dtype=np.float32)
+            labels = np.array([1] * len(candidate["positive_points"]) + [0] * len(candidate["negative_points"]), dtype=np.int32)
+            masks, scores, _ = predictor.predict(point_coords=pts, point_labels=labels, multimask_output=False)
         info["status"] = "ok"
         info["score"] = float(scores[0]) if len(scores) else None
-        info["device"] = device
         return (masks[0] > 0).astype(np.uint8) * 255, info
     except Exception as exc:
         info["status"] = "predict_failed"
