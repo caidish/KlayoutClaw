@@ -4,8 +4,8 @@ Candidate review is mandatory. Numeric score and automatic rank are hints only.
 
 ## Graphite/backgate
 
-Prefer the SAM candidate that follows the physically plausible continuous
-interior graphite/backgate strip.
+Prefer the SAM candidate that follows the physically plausible continuous,
+slender interior graphite/backgate strip, not a broad dark region.
 
 Reject:
 

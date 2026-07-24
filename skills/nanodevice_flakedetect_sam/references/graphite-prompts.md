@@ -8,7 +8,8 @@ must not auto-generate SAM prompt points from the baseline mask.
 Inspect `graphite_source_grid_80px.png` and `bottom_part.jpg`.
 
 Search inside the bottom hBN / host hBN flake first. Prefer a connected,
-physically plausible long dark strip inside the host over:
+physically plausible long dark slender strip inside the host over any generic
+dark region:
 
 - isolated darker strips outside the host;
 - hBN-colored broad sheets;

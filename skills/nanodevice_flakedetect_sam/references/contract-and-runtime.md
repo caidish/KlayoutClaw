@@ -19,7 +19,9 @@ environment variable. MPS runs enable `PYTORCH_ENABLE_MPS_FALLBACK=1` before
 PyTorch is imported, allowing unsupported Metal operators to run on CPU. The
 selected device and fallback state are recorded in the prompt sidecar.
 
-Run with `--use-sam2` to attempt SAM2 refinement. If import or checkpoint
+The SAM wrapper uses `--use-sam2` internally to attempt SAM2 refinement. Batch
+runners for flake-detect tasks should pass it by default; a new agent should
+not need to add a separate "use SAM" command-line mode. If import or checkpoint
 loading fails, the wrapper falls back to the baseline mask and records the
 failure in `<material>_prompt_candidates.json`.
 
