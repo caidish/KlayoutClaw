@@ -5,7 +5,73 @@ description: Detect individual material layers (graphite, graphene, bottom hBN, 
 
 # nanodevice_flakedetect_detect 鈥?Per-Material Detection
 
-Detect each material from its optimal source image. Four independent scripts, one per material.
+Detect each material from its optimal source image. For flake-detect benchmark
+tasks, this is not a baseline-only path: graphite/backgate and graphene use the
+SAM wrapper by default.
+
+## Default SAM Path For Flake-Detect Tasks
+
+When the task is a flake-detect benchmark or a full stack pipeline, read
+`skills/nanodevice_flakedetect_sam/SKILL.md` and run graphite/backgate plus
+graphene from `skills/nanodevice_flakedetect_sam/scripts/` by default. Do not
+ask the user for a separate `--use-sam` mode flag.
+
+The normal baseline detectors still run inside the wrapper to create source
+grids, fallback candidate 09, and non-SAM diagnostics. Baseline-only
+graphite/graphene masks are not complete results for these tasks unless the
+user explicitly disables SAM or SAM2 cannot import/load; record that fallback
+in the sidecar/run notes.
+
+Use this split:
+
+| Material | Default script path | Selection rule |
+|---|---|---|
+| graphite/backgate | `skills/nanodevice_flakedetect_sam/scripts/graphite.py` | baseline/grid pass, manual prompts, SAM2 candidates, visual rank |
+| graphene | `skills/nanodevice_flakedetect_sam/scripts/graphene.py` | baseline/grid pass, manual prompts, SAM2 candidates, visual rank |
+| bottom_hBN | `skills/nanodevice_flakedetect_sam/scripts/bottom_hbn.py` or baseline equivalent | automatic, inspect low-confidence sidecar |
+| top_hBN | `skills/nanodevice_flakedetect_sam/scripts/top_hbn.py` or baseline equivalent | copy align footprint |
+
+Minimal command shape:
+
+```bash
+# Graphite/backgate grid pass: creates graphite_source_grid_80px.png.
+${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_sam/scripts/graphite.py \
+  --image <bottom_part.jpg> --pixel-size <um/px> --output-dir <detect_dir>
+
+# After inspecting the grid, write <detect_dir>/graphite_manual_prompts.json.
+# Then generate SAM candidates and final mask with the selected zero-based rank.
+${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_sam/scripts/graphite.py \
+  --image <bottom_part.jpg> --pixel-size <um/px> --output-dir <detect_dir> \
+  --manual-prompts-json <detect_dir>/graphite_manual_prompts.json --use-sam2 \
+  --prompt-rank <rank>
+
+# Graphene uses the same grid-first flow; pass --mirror when align did.
+${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_sam/scripts/graphene.py \
+  --image <top_part.jpg> --pixel-size <um/px> --mirror --output-dir <detect_dir> \
+  --manual-prompts-json <detect_dir>/graphene_manual_prompts.json --use-sam2 \
+  --sam-target-frac 0.4 --prompt-rank <rank>
+```
+
+Before assembling `detections.json`, graphite and graphene must each have:
+
+- `<material>_manual_prompts.json`
+- `<material>_prompt_candidates.json`
+- `<material>_candidate_montage.png`
+- `<material>_candidate_##_on_grid.png`
+- `<material>_visual_selection.json` or equivalent run note with selected rank
+- final `<material>_mask.png`, `<material>_contour.npy`, and
+  `<material>_result.json` from the selected rank
+
+Candidate numbering is one-based in filenames and zero-based in
+`--prompt-rank`: `candidate_01` means rank `0`, and `candidate_09` means rank
+`8`. Candidate 09 is the baseline/refined fallback, not a SAM prompt result;
+choose it only after all SAM candidates are visibly wrong and record why.
+
+## Baseline Detector Role
+
+The bullets below describe the detector behavior. For graphite/backgate and
+graphene in flake-detect tasks, treat those scripts as the baseline/fallback
+logic wrapped by the SAM path above.
 
 - **graphite** (or backgate-metal) 鈥?`graphite.py`. Single adaptive pipeline that produces a ranked list of candidates and lets the agent pick which one is graphite via `--cluster-id` (vision-required). All other parameters are knobs the agent can tune ONLY when the candidate the agent wanted to pick isn't in the top-N panel.
 - **graphene** 鈥?adaptive signed-contrast candidates inside the top-flake mask. Emits a ranked candidate panel; the agent must inspect the candidate image and pick the visually correct graphene region via `--cluster-id`, not choose solely by the highest numeric score. Graphene is usually in relatively light-colored regions and may cover/extend across flake edges; it can be fairly large, but a very tiny region is almost certainly not the desired graphene. Avoid selecting thin strip artifacts even when they rank highly.
@@ -17,6 +83,10 @@ Detect each material from its optimal source image. Four independent scripts, on
 `graphite.py` always emits a real-sized blob. If a stack produces zero candidates after scoring, the script writes an empty mask with `low_confidence: true`. Orchestrators should treat `low_confidence: true` as a signal to escalate to vision-review rather than as a hard failure.
 
 ## Prerequisites
+
+Default flake-detect runs use the SAM wrapper scripts for graphite/backgate and
+graphene: `skills/nanodevice_flakedetect_sam/scripts/graphite.py` and
+`skills/nanodevice_flakedetect_sam/scripts/graphene.py`.
 
 - Conda env with opencv, numpy, scikit-learn
 - Source images for each material
@@ -35,6 +105,11 @@ Detect each material from its optimal source image. Four independent scripts, on
 
 All four detectors are independent 鈥?`bottom_hbn.py`, `graphene.py`, `top_hbn.py`, and `graphite.py` can run in parallel.
 
+Default SAM ordering overrides the legacy baseline-only parallel note above:
+run graphite/backgate first, freeze its selected mask/rank, then run graphene
+with the same mirror setting as alignment. Bottom hBN and top hBN can run
+independently after align outputs exist.
+
 **Candidate review is mandatory:** whenever a detector emits a candidate panel,
 candidate images, or candidate JSON, Codex/Claude/Qlaybot or another capable
 agent must inspect those outputs and choose the rank/ID. Numeric score is a
@@ -42,11 +117,12 @@ hint, not the authority. Do not leave rank 0 selected only because it is the
 default; if another candidate is visually correct, re-run with `--cluster-id`
 or the detector's equivalent selection flag.
 
-**Graphite SAM completion is mandatory when using the SAM detector skill.** The
-first graphite pass without `--use-sam2` only creates the source grid and
-baseline candidates. The agent must inspect `graphite_source_grid_50px.png`
+**Graphite SAM completion is mandatory for flake-detect tasks.** The first
+graphite pass without `--use-sam2` only creates the source grid and baseline
+candidates; batch runners should perform this baseline/grid pass inside the
+default SAM workflow. The agent must inspect `graphite_source_grid_80px.png`
 against `bottom_part.jpg`, create `graphite_manual_prompts.json` with six to
-eight visual candidates, and rerun `graphite.py` with
+eight visual candidates, and rerun through the SAM wrapper with
 `--manual-prompts-json <path> --use-sam2`. Put positives along the continuous
 graphite/backgate strip and negatives on neighboring material to prevent
 flooding. Do not proceed to `detections.json`, combine, gdsalign, or scoring
@@ -55,9 +131,8 @@ and `graphite_candidate_*_on_grid.png` files are present.
 `manual_grid_prompts_required` means the run is unfinished, not a valid
 baseline to score as SAM.
 
-**Graphene manual SAM handoff is also mandatory when using the SAM detector
-skill.** After reviewing `00_graphene_candidates.png` and the mirrored
-top-part grid/raw image, the agent must write
+**Graphene manual SAM handoff is also mandatory for flake-detect tasks.** After
+reviewing the mirrored top-part grid/raw image, the agent must write
 `graphene_manual_prompts.json` with six to eight candidates. Each candidate
 must put positives in the correct layered graphene region and negatives on
 nearby non-graphene top hBN/top-flake material when visible. For each outward
@@ -65,8 +140,8 @@ direction, leave the side open when coherent graphene reaches a real flake
 edge; preserve continuous similar-color/brightness layered regions without
 putting negatives between them; when the continuation gradually becomes
 uniform hBN, put negatives immediately on the hBN side of that transition.
-Rerun
-`graphene.py` with `--manual-prompts-json <path> --use-sam2`; automatic
+Rerun through the SAM wrapper with
+`--manual-prompts-json <path> --use-sam2`; automatic
 mask-centered points alone do not satisfy this workflow. Do not assemble,
 combine, gdsalign, or score until the graphene prompt sidecar records the
 manual prompt path and the candidate files have been visually reviewed.

@@ -55,14 +55,18 @@ prompt files or old rank selections as outside the rerun.
 2. Run `align/` from the raw source images before detection. The only time an
    existing `align/` may be reused is when the user explicitly asks for a
    reuse-align rerun.
-3. For SAM-assisted detection, graphite and graphene both require manual
-   grid-first prompt selection:
+3. Detect tasks default to the SAM wrapper flow for graphite and graphene. The
+   baseline detectors still run inside that flow to create source grids,
+   baseline/refined fallback candidate 09, and non-SAM material outputs, but an
+   agent must not treat the baseline-only graphite/graphene masks as complete.
+   Graphite and graphene both require manual grid-first prompt selection:
    - Graphite: inspect `graphite_source_grid_80px.png` and `bottom_part.jpg`,
      search for the graphite/backgate candidate inside the bottom hBN / host
      hBN first. Do not reject a target merely because it is visually within a
      blue/cyan hBN mask or overlay area: that color is a display cue, not
-     evidence against graphite. The real backgate may be the relatively darker,
-     continuous vertical strip surrounded by or embedded in that host hBN. Write
+    evidence against graphite. The real backgate may be the relatively darker,
+    continuous slender vertical strip surrounded by or embedded in that host
+    hBN; do not broaden this rule into a generic dark region. Write
      `graphite_manual_prompts.json`, rerun with
      `--manual-prompts-json ... --use-sam2`, inspect candidate images, then
      rerun with the visually selected `--prompt-rank`.
@@ -117,9 +121,10 @@ record the reason explicitly.
 
 For graphite/backgate visual choice, never reason from overlay color alone:
 blue/cyan hBN mask does not mean "not graphite". The target should be judged by
-the raw microscope structure: a relatively darker, continuous vertical or
-strip-like region physically surrounded by/inside the host hBN is the preferred
-graphite/backgate hypothesis over isolated outside dark fragments.
+the raw microscope structure: a relatively darker, continuous slender vertical
+or strip-like object physically surrounded by/inside the host hBN is the
+preferred graphite/backgate hypothesis over isolated outside dark fragments or
+broad dark regions.
 
 ---
 
@@ -165,7 +170,7 @@ after combine before final commit/review/reporting.
 **Goal:** Segment each material from its optimal source image.
 
 **Dispatch a subagent** with this prompt:
-> Read `skills/nanodevice_flakedetect_detect/SKILL.md` and follow its workflow. If SAM-assisted graphite or graphene detection is requested or available for this task, also read `skills/nanodevice_flakedetect_sam/SKILL.md` and use that workflow for graphite and graphene. Detect all 4 materials and assemble `detections.json`.
+> Read `skills/nanodevice_flakedetect_detect/SKILL.md` and `skills/nanodevice_flakedetect_sam/SKILL.md`, then use the SAM wrapper workflow for graphite and graphene by default. Detect all 4 materials and assemble `detections.json`.
 > - bottom_part: `<path>` (for graphite)
 > - top_part: `<path>` (for graphene, `--mirror`)
 > - full_stack_raw: `<path>` (for bottom_hBN)
@@ -174,13 +179,15 @@ after combine before final commit/review/reporting.
 > - pixel_size: `<value>` um/px
 > - output_dir: `<out>/detect`
 
-**What the subagent does:** Runs all 4 detect scripts. For a SAM-assisted first
-full task, graphite and graphene use grid-first manual prompts: inspect the
+**What the subagent does:** Runs all 4 detect scripts. For a first full detect
+task, graphite and graphene use the SAM wrapper grid-first manual prompt flow:
+run the baseline/grid pass, inspect the
 source grid images, write `graphite_manual_prompts.json` and
 `graphene_manual_prompts.json`, rerun with `--use-sam2`, visually inspect the
 candidate images, record the chosen ranks, and rerun with explicit
-`--prompt-rank` before assembling `detections.json`. For non-SAM graphene,
-review `00_graphene_candidates.png` and rerun with `--cluster-id` if needed.
+`--prompt-rank` before assembling `detections.json`. Candidate 09 remains the
+baseline/refined fallback inside the SAM candidate set; choose it only by the
+SAM visual-review rules.
 For bottom_hBN, inspect `low_confidence` / `winner_score` in the result JSON
 and escalate to vision-review when those signal a poor pick.
 

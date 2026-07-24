@@ -5,9 +5,10 @@ description: SAM2-prompt assisted flake detection. Wraps the standard four flake
 
 # nanodevice_flakedetect_sam
 
-Use this skill for SAM-assisted graphite/backgate or graphene detection, prompt
-candidate images, manual point selection, or a SAM rerun of the normal
-`nanodevice_flakedetect_detect` flow.
+Use this skill as the default graphite/backgate and graphene detect flow for
+flake-detect tasks, prompt candidate images, manual point selection, or a SAM
+rerun of the normal `nanodevice_flakedetect_detect` flow. Baseline detector
+passes remain part of this flow for source grids and candidate 09 fallback.
 
 ## Required References
 
@@ -35,14 +36,18 @@ products may still be reused only when the user explicitly allows align reuse.
 1. Reuse completed align products only if allowed by the user.
 2. Run graphite once to produce `graphite_source_grid_80px.png`.
 3. Write fresh `graphite_manual_prompts.json`.
-4. Rerun graphite with `--manual-prompts-json ... --use-sam2`.
+4. Rerun graphite through the SAM wrapper with
+   `--manual-prompts-json ... --use-sam2` (batch runners should pass this
+   internally; users should not need a separate `--use-sam` mode flag).
 5. Inspect `graphite_candidate_montage.png` and individual candidates.
 6. Write `graphite_visual_selection.json` with one frozen rank and reason.
 7. Rerun graphite with the selected rank so final `graphite_mask.png` exists.
 8. Generate `graphite_on_top_mask.png` only after final graphite is frozen.
 9. Run graphene grid-first from clean mirrored top image.
 10. Write fresh `graphene_manual_prompts.json`.
-11. Rerun graphene with `--manual-prompts-json ... --use-sam2`.
+11. Rerun graphene through the SAM wrapper with
+    `--manual-prompts-json ... --use-sam2` (batch runners should pass this
+    internally; users should not need a separate `--use-sam` mode flag).
 12. Inspect candidates with the yellow graphite prior visible.
 13. Select graphene only after positive pixel overlap with
     `graphite_on_top_mask.png`; if overlap is zero, replace prompts and rerun.
