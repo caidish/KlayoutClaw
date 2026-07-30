@@ -87,10 +87,13 @@ Runs **fully autonomously** except for one mandatory pause: **rotation selection
    Partial-FOV fallback: If final IoU/outside_fraction are bad AND the chosen
             sweep/refine scale is far from 1, suspect that source_mask and
             footprint_mask are different visible crops of the same flake.
-            Do not keep forcing full-mask IoU. Extract the longest visible
-            non-border flake edges from source and footprint, find two
-            intersecting long edges in each, build a partial V/corner shape,
-            and re-align from that edge-corner geometry.
+            This is a hard stop for the normal Chamfer path: do not keep
+            forcing full-mask IoU, do not accept the best bad refine result,
+            and do not continue downstream until `partial_fov_edge_align.py`
+            has been run. Extract the longest visible non-border flake edges
+            from source and footprint, find two intersecting long edges in
+            each, build a partial V/corner shape, and re-align from that
+            edge-corner geometry.
 
    Batch-run behavior: `run_flake_detect_batch.py` must run normal top
             alignment first. After `refine.py`, automatically inspect the
@@ -189,15 +192,26 @@ This is the core skill 鈥?reading diagnostic outputs and knowing which knob to 
 
 ### Partial-FOV Edge/Corner Fallback
 
-Use this when the full source and footprint masks have genuinely different
-visible shapes because the microscope field of view clipped one image. The
-trigger is the combination of poor final metrics and an implausible scale:
+This is a mandatory fallback, not an optional heuristic. Use
+`partial_fov_edge_align.py` when the full source and footprint masks have
+genuinely different visible shapes because the microscope field of view clipped
+one image. When these conditions are met, the agent must run
+`partial_fov_edge_align.py --write-warp-top` before accepting alignment or
+continuing to detect/combine/GDS output. The trigger is the combination of poor
+final metrics and an implausible scale:
 
 - IoU is low or outside_fraction/top_containment is poor after refine.
 - The selected sweep/refine scale is far from 1, especially a degenerate small
   scale that makes a partial region overlap.
 - Visual inspection shows source_mask and footprint_mask are different crops
   of the same flake, not simply a bad footprint candidate.
+
+Hard rule: if `source_mask.png` and `footprint_mask.png` are not comparable
+full-flake masks after normal footprint retries, and `refine.py` cannot produce
+acceptable metrics, run `partial_fov_edge_align.py`. Do not mark alignment
+complete, do not use the low-quality `warp_top.npy`, and do not proceed
+downstream until the partial-FOV method has produced a replacement
+`warp_top.npy` or has failed with explicit diagnostic artifacts.
 
 Fallback rule:
 
@@ -255,7 +269,7 @@ flake, fix those inputs first instead of using edge/corner fallback.
 ### Retry Strategy
 
 > **Rule**: NEVER retry refine.py with the same footprint. If refine fails, fix the footprint first.
-> **Time budget**: Each refine.py attempt takes 10-15 min. Budget max 2 full attempts (footprint鈫抯weep鈫抮efine). If 2 attempts fail and the best IoU is above 0.5, accept it and proceed 鈥?an imperfect alignment that lets you complete the pipeline is better than a perfect alignment that times out.
+> **Time budget**: Each refine.py attempt takes 10-15 min. Budget max 2 full attempts (footprint鈫抯weep鈫抮efine). If 2 attempts fail because source_mask and footprint_mask are different visible crops, run `partial_fov_edge_align.py --write-warp-top`; do not accept the best bad full-mask refine result.
 > **Execution reminder**: ALWAYS run refine.py as a foreground blocking Bash command with timeout=1200000. NEVER use run_in_background or sleep/poll loops.
 
 ```
@@ -263,7 +277,10 @@ Attempt 1: footprint (default) 鈫?sweep 鈫?select rotation 鈫?refine
   鈫?If refine FAILS (IoU < 0.50):
 Attempt 2: footprint --candidate-rank 2 鈫?sweep 鈫?select rotation 鈫?refine
   鈫?If still FAILS (IoU < 0.50):
-Accept the best result from attempts 1-2 and proceed. Do NOT run a 3rd refine.
+If attempts 1-2 fail because source_mask and footprint_mask are different
+visible crops, run `partial_fov_edge_align.py --write-warp-top` and use its
+replacement `warp_top.npy`. Do NOT run a 3rd normal refine and do NOT continue
+downstream with the best bad full-mask refine result.
 Max refine.py invocations: 2. Each takes 10-15 min 鈥?3 would consume 45 min.
 ```
 

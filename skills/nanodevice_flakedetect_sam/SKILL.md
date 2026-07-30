@@ -43,11 +43,11 @@ products may still be reused only when the user explicitly allows align reuse.
 6. Write `graphite_visual_selection.json` with one frozen rank and reason.
 7. Rerun graphite with the selected rank so final `graphite_mask.png` exists.
 8. Generate `graphite_on_top_mask.png` only after final graphite is frozen.
-9. Run graphene grid-first from clean mirrored top image.
+9. Run graphene grid-first from clean mirrored top image; the wrapper forces `<detect_dir>/../align/footprint_mask.png` in code.
 10. Write fresh `graphene_manual_prompts.json`.
 11. Rerun graphene through the SAM wrapper with
-    `--manual-prompts-json ... --use-sam2` (batch runners should pass this
-    internally; users should not need a separate `--use-sam` mode flag).
+    `--manual-prompts-json ... --use-sam2`; the wrapper injects the required footprint
+    internally, and users should not need a separate `--use-sam` mode flag.
 12. Inspect candidates with the yellow graphite prior visible.
 13. Select graphene only after positive pixel overlap with
     `graphite_on_top_mask.png`; if overlap is zero, replace prompts and rerun.
@@ -57,11 +57,14 @@ products may still be reused only when the user explicitly allows align reuse.
 ## Hard Gates
 
 - Candidate review is mandatory whenever candidate images, montage, or
-  `*_prompt_candidates.json` exist. SAM2 score and automatic rank are hints only.
+  `*_prompt_candidates.json` exist. For graphene, every baseline/grid pass,
+  SAM candidate generation, and final `--prompt-rank` rerun must use the wrapper-forced
+  `<detect_dir>/../align/footprint_mask.png`; do not rely on a manual `--footprint-mask` argument. SAM2 score and automatic rank are hints only.
 - Candidate filename numbering is one-based; `--prompt-rank` is zero-based.
   `candidate_01` means rank `0`; `candidate_09` means rank `8`.
-- Candidate 09 is baseline/refined fallback, not a SAM prompt result. Choose it
-  only after documenting why every SAM candidate 01-08 failed.
+- Candidate 09 is baseline/refined fallback, not a SAM prompt result. Review it
+  with the same visual evidence standard as the SAM candidates, and document
+  why it was selected when choosing rank 8.
 - Do not assemble `detections.json`, combine, gdsalign, or score while graphite
   or graphene still needs manual prompts or visual rank selection.
 - Do not accept a zero-overlap graphene candidate when

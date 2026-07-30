@@ -34,6 +34,12 @@ Graphene is often light-colored, translucent, and in multi-layer overlap
 regions. It may cover or cross a real flake edge. Tiny isolated specks, pure
 glare, or thin strip artifacts are usually wrong.
 
+Saturated white / high-exposure regions are not graphene targets. This is true
+even when the region is large, connected, inside the top-flake footprint, or has
+some weak internal texture. Use them as negative regions. A valid bright
+graphene target must be non-saturated and show translucent layered texture or
+stable physical boundaries in the raw/mirrored top image.
+
 ## Prompt Hypotheses
 
 Build six to eight different hypotheses, not tiny perturbations:
@@ -44,6 +50,8 @@ Build six to eight different hypotheses, not tiny perturbations:
 - baseline-preserving expansion that includes substantial baseline components;
 - baseline/local components as positive priors unless a clear physical gap
   proves they are unrelated.
+- high-exposure rejection hypothesis with negatives on saturated white/pink
+  glare regions near the candidate.
 
 Use negatives on nearby non-graphene top HBN/top-flake material when visible.
 Distant background negatives alone are not enough.

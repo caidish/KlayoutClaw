@@ -17,9 +17,10 @@ Reject:
 - short clean fragments when another candidate preserves the usable continuous
   strip.
 
-Candidate 09 is fallback only after all SAM candidates fail. If most candidates
-are wrong because prompts targeted the wrong visual object, rewrite prompts
-instead of selecting the least-bad mask.
+Candidate 09 is the baseline/refined fallback, not a SAM prompt result. Review
+it with the same visual evidence standard as the SAM candidates. If most
+candidates are wrong because prompts targeted the wrong visual object, rewrite
+prompts instead of selecting the least-bad mask.
 
 If candidates recover only a very thick vertical band, check whether positives
 were centered on a broad contrast zone or negatives were too close. Move
@@ -35,9 +36,18 @@ Reject:
 
 - tiny isolated specks or long narrow strip artifacts;
 - nearly whole top HBN/top-flake masks unless raw image supports it;
+- saturated white / high-exposure glare regions of any size, even if they are
+  connected, large, or appear inside the top-flake footprint;
 - small glare-like bright patches without layered texture;
 - candidates that jump across a physical gap to distant unrelated patches;
 - candidates that flood into uniform HBN.
+
+High exposure is a hard visual reject for graphene selection. Do not choose a
+candidate whose main area is a white/pink saturated reflection, washed-out
+highlight, or bloom region. Treat those pixels as non-graphene and place
+negative prompts just outside/inside them to keep SAM from growing into them.
+Only choose a bright graphene candidate when the raw image shows non-saturated
+translucent layered texture and stable physical boundaries.
 
 Do not reject a larger graphene candidate from area alone. Treat it as flooding
 only when it crosses a clear internal non-graphene boundary or expands to nearly

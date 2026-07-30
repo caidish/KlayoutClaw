@@ -27,7 +27,7 @@ Use this split:
 | Material | Default script path | Selection rule |
 |---|---|---|
 | graphite/backgate | `skills/nanodevice_flakedetect_sam/scripts/graphite.py` | baseline/grid pass, manual prompts, SAM2 candidates, visual rank |
-| graphene | `skills/nanodevice_flakedetect_sam/scripts/graphene.py` | baseline/grid pass, manual prompts, SAM2 candidates, visual rank |
+| graphene | `skills/nanodevice_flakedetect_sam/scripts/graphene.py` | baseline/grid pass with code-forced align footprint, manual prompts, SAM2 candidates, visual rank |
 | bottom_hBN | `skills/nanodevice_flakedetect_sam/scripts/bottom_hbn.py` or baseline equivalent | automatic, inspect low-confidence sidecar |
 | top_hBN | `skills/nanodevice_flakedetect_sam/scripts/top_hbn.py` or baseline equivalent | copy align footprint |
 
@@ -46,6 +46,7 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_sa
   --prompt-rank <rank>
 
 # Graphene uses the same grid-first flow; pass --mirror when align did.
+# Always pass the align footprint so baseline candidates and fallback 09 use the same spatial prior.
 ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_sam/scripts/graphene.py \
   --image <top_part.jpg> --pixel-size <um/px> --mirror --output-dir <detect_dir> \
   --manual-prompts-json <detect_dir>/graphene_manual_prompts.json --use-sam2 \
@@ -65,7 +66,8 @@ Before assembling `detections.json`, graphite and graphene must each have:
 Candidate numbering is one-based in filenames and zero-based in
 `--prompt-rank`: `candidate_01` means rank `0`, and `candidate_09` means rank
 `8`. Candidate 09 is the baseline/refined fallback, not a SAM prompt result;
-choose it only after all SAM candidates are visibly wrong and record why.
+review it with the same visual evidence standard as the SAM candidates and
+record why it was selected.
 
 ## Baseline Detector Role
 
@@ -107,7 +109,8 @@ All four detectors are independent 鈥?`bottom_hbn.py`, `graphene.py`, `top_hbn.
 
 Default SAM ordering overrides the legacy baseline-only parallel note above:
 run graphite/backgate first, freeze its selected mask/rank, then run graphene
-with the same mirror setting as alignment. Bottom hBN and top hBN can run
+with the same mirror setting as alignment. The wrapper forces the sibling
+`align/footprint_mask.png` from `--output-dir`. Bottom hBN and top hBN can run
 independently after align outputs exist.
 
 **Candidate review is mandatory:** whenever a detector emits a candidate panel,
@@ -141,7 +144,7 @@ edge; preserve continuous similar-color/brightness layered regions without
 putting negatives between them; when the continuation gradually becomes
 uniform hBN, put negatives immediately on the hBN side of that transition.
 Rerun through the SAM wrapper with
-`--manual-prompts-json <path> --use-sam2`; automatic
+`--manual-prompts-json <path> --use-sam2`; the wrapper forces the align footprint. Automatic
 mask-centered points alone do not satisfy this workflow. Do not assemble,
 combine, gdsalign, or score until the graphene prompt sidecar records the
 manual prompt path and the candidate files have been visually reviewed.
@@ -273,7 +276,7 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} graphite.py \
 
 ## Graphene Detection 鈥?Tuning Guide
 
-**Method**: Isolates the top flake, generates signed bright/dark contrast candidates in LAB space, ranks them by area/contrast/shape plus footprint containment when available, then writes a candidate panel for agent review.
+**Method**: Isolates the top flake, generates signed bright/dark contrast candidates in LAB space, ranks them by area/contrast/shape plus footprint containment, then writes a candidate panel for agent review. For benchmark/full-stack runs, the wrapper requires `<detect_dir>/../align/footprint_mask.png` and injects it internally for graphene baseline, SAM candidate generation, and prompt-rank reruns.
 
 **Key insight**: The auto-selection is rank #0, but the final authority is the candidate panel. The agent must read `00_graphene_candidates.png` and decide which candidate visually matches the graphene flake; numeric score is only a hint. Graphene is generally a relatively light-colored region, can cover or cross the visible flake edge, and can be large; a very small isolated speck/patch is usually not the target graphene. Use `--cluster-id <rank>` when the highlighted candidate is an artifact, hBN region, a thin strip, or only a fragment while another panel isolates graphene better.
 
@@ -286,6 +289,7 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} graphite.py \
 | Auto-selected panel is a long thin strip but the real graphene is broader/flake-shaped | Score favored an edge/stripe artifact | Do not accept it just because it ranks high; choose the visually correct broader graphene candidate |
 | Candidate is a tiny isolated speck/patch | Too small to be the intended graphene | Prefer a larger light-colored graphene-like region, including one that reaches or crosses an edge |
 | Candidate is a small bright/glare-like block with no layered texture | Brightness was mistaken for graphene contrast | Reject it unless the raw image shows layer boundaries/overlap around that block |
+| Candidate's main area is saturated white/pink high-exposure glare, even if large or connected | Overexposed reflection was mistaken for graphene | Reject it; use negatives on the glare and choose a non-saturated translucent/layered region |
 | Candidate covers nearly all of top hBN/top flake | It is usually an hBN/top-flake mask, not graphene | Prefer a medium/large translucent layered subregion with coherent boundaries |
 | Graphene region is split or partial | Selected seed is only a fragment | Prefer a panel with fuller graphene coverage; if none exists, keep default and note low confidence |
 | No panel clearly isolates graphene | Candidate pool is ambiguous | Inspect `graphene_result.json.top_candidates`; retry only if the image/footprint inputs are wrong |
@@ -299,14 +303,15 @@ continuous similar layered region with negatives. If that continuation loses
 layered contrast and becomes uniform hBN, place the negative immediately across
 that local transition on the hBN side.
 
-### Important: --mirror flag
+### Important: --mirror and forced footprint
 
-If the align step used `--mirror` for the top_part, **you must also pass --mirror here**. The graphene detection must operate in the same coordinate system as the alignment warp.
+If the align step used `--mirror` for the top_part, **you must also pass --mirror here**. The graphene detection must operate in the same coordinate system as the alignment warp. For benchmark/full-stack runs, the wrapper always forces `<detect_dir>/../align/footprint_mask.png` on every graphene baseline, SAM, and `--prompt-rank` rerun so `00_graphene_candidates.png`, fallback candidate 09, and the final mask are generated with the same spatial prior.
 
 ```bash
 # Pass 1: auto-detect + review
 ${PYTHON_PATH:-conda run -n instrMCPdev python} graphene.py \
-    --image <top_part.jpg> --pixel-size <um/px> --mirror --output-dir <path>
+    --image <top_part.jpg> --pixel-size <um/px> --mirror \
+    --output-dir <path>
 
 # Pass 2: override after reviewing 00_graphene_candidates.png
 ${PYTHON_PATH:-conda run -n instrMCPdev python} graphene.py \
