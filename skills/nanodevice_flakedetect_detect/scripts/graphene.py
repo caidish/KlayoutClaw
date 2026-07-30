@@ -298,12 +298,16 @@ _GRAPHENE_PALETTE = [
 
 
 def _candidate_public_record(record: dict, rank: int) -> dict:
+    panel_area_px = record.get('_panel_area_px')
+    panel_area_um2 = record.get('_panel_area_um2')
     out = {
         'rank': rank,
         'lab_idx': int(record.get('lab_idx', -1)),
         'polarity': int(record.get('polarity', 0)),
         'area_px': int(record.get('area_px', 0)),
         'area_um2': round(float(record.get('area_um2', 0.0)), 2),
+        'panel_area_px': None if panel_area_px is None else int(panel_area_px),
+        'panel_area_um2': None if panel_area_um2 is None else round(float(panel_area_um2), 2),
         'score': round(float(record.get('score', 0.0)), 4),
         'aspect': round(float(record.get('aspect', 0.0)), 2),
         'solidity': round(float(record.get('solidity', 0.0)), 3),
@@ -335,7 +339,9 @@ def draw_graphene_candidates(image_bgr: np.ndarray,
 
     for rank in range(n_show):
         rec = ranked[rank]
-        mask = rec.get('_cc_mask')
+        mask = rec.get('_panel_mask')
+        if mask is None:
+            mask = rec.get('_cc_mask')
         panel = base.copy()
         color = _GRAPHENE_PALETTE[rank % len(_GRAPHENE_PALETTE)]
         if mask is not None:
@@ -350,8 +356,8 @@ def draw_graphene_candidates(image_bgr: np.ndarray,
                           (0, 255, 255), 8)
 
         label1 = (
-            f"#{rank} area={rec.get('area_um2', 0.0):.0f}um2 "
-            f"score={rec.get('score', 0.0):.3f}"
+            f"#{rank} area={rec.get('_panel_area_um2', rec.get('area_um2', 0.0)):.0f}um2 "
+            f"seed={rec.get('area_um2', 0.0):.0f} score={rec.get('score', 0.0):.3f}"
         )
         label2 = (
             f"relL={rec.get('rel_L_med', 0.0):.1f} "
@@ -1404,235 +1410,86 @@ def detect_graphene(
         pick_rank = int(np.clip(cluster_id, 0, len(cc_records) - 1))
 
     best = cc_records[pick_rank]
-    base_mask = best['_cc_mask']
 
-    # --- Step 5: region grow ---
-    # Two modes depending on footprint availability (Phase 10b):
-    #
-    # A. Footprint-bounded grow (footprint_mask provided):
-    #    Grow from seed outward within the footprint, anchored to seed LAB
-    #    statistics.  The footprint is the hard spatial upper bound so no
-    #    area cap is needed.  This recovers the full graphene region when the
-    #    polarity threshold captures only the bright core of a larger graphene
-    #    flake.  The 1.10× area cap used without footprint is removed because:
-    #    (i) the footprint provides an equivalent spatial constraint, and
-    #    (ii) the cap was the primary cause of 10–100× undersegmentation on
-    #    ml09/AH03/AH05 where the seed CC is a fragment of the true graphene.
-    #
-    # B. Leakage-check grow (no footprint):
-    #    The boundary-leakage criterion (p10 gradient stop) provides a
-    #    substrate-agnostic spatial bound.  Area cap retained because without
-    #    the footprint there is no independent upper bound.  Applied only when
-    #    gradient evidence is strong (seed p90 > 5.0) to avoid over-expansion
-    #    on low-contrast stacks.
+    # --- Step 5/6: region grow + cleanup ---
+    # The candidate panel should show the same post-grow/refined mask that will
+    # be written if that rank is selected. Otherwise an agent may choose a small
+    # seed CC from 00_graphene_candidates.png and receive a much larger final
+    # graphene_mask.png after grow/refine.
     grad_mag = _gradient_mag(img)
-    seed_grads = grad_mag[base_mask > 0]
-    seed_area_px = int((base_mask > 0).sum())
-    seed_abs_rel_L = float(abs(best.get('rel_L_med', 0.0)))
     GRADIENT_EVIDENCE_FLOOR = 5.0
-
-    # Determine which footprint to use for the grow step.
-    # Two sources:
-    #   1. footprint_mask — used for BOTH scoring and grow (explicit agent flag).
-    #   2. footprint_mask_grow_only — used ONLY for grow (auto-discovered, Phase 13).
-    # When footprint_mask is provided, it takes priority for grow.
-    # footprint_mask_grow_only is only used when footprint_mask is None.
-    _grow_footprint = footprint_mask if footprint_mask is not None else footprint_mask_grow_only
-
-    # Compute seed fraction relative to footprint (used in grow-path selection).
-    # When a footprint is available for grow, use footprint area as denominator —
-    # it is the physically correct upper bound for how large a graphene region
-    # can be.  Fall back to host area when no footprint is available.
-    _fp_area_for_frac = (
-        int((_grow_footprint > 0).sum())
-        if _grow_footprint is not None and (_grow_footprint > 0).any()
-        else host_area_px
-    )
-    seed_frac = seed_area_px / max(1, _fp_area_for_frac)
-
-    # --- Step 5: region grow (Phase 13 — boundary-driven, footprint-first) ---
-    #
-    # Universal principle: graphene fills a contiguous region of the top-flake
-    # footprint with relatively uniform optical contrast.  The correct grow
-    # strategy is to expand the seed until it hits a real optical boundary
-    # (LAB sigma cap) or the footprint edge — NOT to stop at an arbitrary area
-    # multiple.  The footprint itself is the hard spatial upper bound.
-    #
-    # Priority order:
-    #   A. Footprint-bounded grow (Phase 10b / Phase 13):
-    #      When a footprint mask is available for grow and the seed has not yet
-    #      filled the footprint (seed < FOOTPRINT_GROW_MAX_SEED_FRACTION × fp),
-    #      grow outward within the footprint, anchored to seed LAB statistics.
-    #      The LAB sigma cap (LAB_GROW_SIGMA_CAP_FOOTPRINT = 2.0) prevents the
-    #      grow from crossing real optical boundaries into non-graphene footprint
-    #      areas.  No explicit area cap is needed — the footprint + LAB cap are
-    #      the two boundary conditions.
-    #
-    #      Phase 13 change: raised FOOTPRINT_GROW_MAX_SEED_FRACTION from 0.10
-    #      to 0.85.  Rationale: the old 10% cap blocked footprint-bounded grow
-    #      for seeds at 15-78% of footprint (ml09/AH03/AH05/QH12 — all plateau
-    #      stacks), causing them to fall through to NOGROW.  The polarity +
-    #      LAB sigma cap already prevent over-expansion; the area fraction gate
-    #      is redundant and harmful when seed_frac is in the 15-85% range.
-    #      Only skip the grow when the seed already fills most of the footprint
-    #      (>= 85%), at which point further grow cannot help.
-    #
-    #      Phase 13 change: removed the NOGROW_LARGE_SEED short-circuit (Phase
-    #      10d, 5% threshold).  That guard prevented the leakage-check grow from
-    #      over-expanding on AH02 when the seed was already close to GT.  But
-    #      it also prevented the footprint-bounded grow for all plateau stacks
-    #      (seed_frac 15-78%).  With the footprint-bounded grow now preferred for
-    #      these stacks, the 5% NOGROW guard is no longer necessary: the LAB
-    #      sigma cap does the job without an area fraction gate.
-    #
-    #      Phase 13 change: footprint_mask_grow_only enables footprint-bounded
-    #      grow from the auto-discovered footprint WITHOUT influencing candidate
-    #      scoring (footprint_mask does both scoring AND grow; grow_only does
-    #      only grow).  This preserves the photometric candidate ranking while
-    #      expanding the selected seed to the footprint-bounded optical extent.
-    #
-    #   B. Gradient-leakage grow (fallback: no footprint, or seed fills footprint):
-    #      Area-capped at 1.50× seed (conservative).  Requires gradient evidence.
-    #
-    #   C. No grow: seed is homogeneous / low-contrast and no footprint is
-    #      available.
-
-    # Threshold: only skip footprint-bounded grow when seed already fills most
-    # of the footprint — further grow cannot meaningfully help.
     FOOTPRINT_GROW_MAX_SEED_FRACTION = 0.85  # was 0.10 in Phase 10b
     FOOTPRINT_GROW_MIN_SEED_CONTRAST = 10.0  # |rel_L| floor for LAB-similarity grow
+    _grow_footprint = footprint_mask if footprint_mask is not None else footprint_mask_grow_only
     fp_area_for_grow = (
         int((_grow_footprint > 0).sum())
         if _grow_footprint is not None else 0
     )
-    seed_fp_fraction = (
-        seed_area_px / max(fp_area_for_grow, 1)
-        if fp_area_for_grow > 0 else 1.0
-    )
-    use_footprint_grow = (
-        _grow_footprint is not None
-        and fp_area_for_grow > 0
-        and seed_abs_rel_L >= FOOTPRINT_GROW_MIN_SEED_CONTRAST
-        and seed_fp_fraction < FOOTPRINT_GROW_MAX_SEED_FRACTION
-    )
-    if use_footprint_grow:
-        # Phase 10b / Phase 13: footprint-bounded grow — footprint + LAB sigma
-        # cap + gradient stop are the bounds; no area fraction gate needed.
-        # Pass seed polarity and rel_L to apply directional constraint (prevents
-        # a bright seed from growing into dark footprint areas and vice versa).
-        # Pass grad_mag for gradient-leakage stop (Phase 13): prevents absorbing
-        # spectrally-similar non-graphene footprint areas (e.g. adjacent hBN).
-        seed_polarity_val = int(best.get('polarity', 0))
-        grown = _region_grow_footprint_bounded(
-            base_mask, lab, _grow_footprint, pixel_size,
-            seed_polarity=seed_polarity_val,
-            rel_L_image=rel_L,
-            grad_mag=grad_mag,
-        )
-    elif len(seed_grads) > 0 and float(np.percentile(seed_grads, 90)) > GRADIENT_EVIDENCE_FLOOR:
-        # Gradient-leakage grow with 1.50× area cap (increased from 1.10× in Phase 2).
-        # The larger cap allows more growth on stacks where the polarity threshold
-        # captures only the bright core and the gradient boundary is clear.
-        GROW_AREA_CAP_FACTOR = 1.50  # stop grow when area exceeds 1.50x seed
-        grown = _region_grow_leakage_check(
-            base_mask, lab, grad_mag, flake, pixel_size, n_iter=2,
-            area_cap_px=int(seed_area_px * GROW_AREA_CAP_FACTOR),
-        )
-    else:
-        # Seed region is homogeneous (low gradient) or low-contrast with no
-        # footprint: skip grow to avoid over-expansion into adjacent host material.
-        grown = base_mask
-
-    # --- Step 5b: polarity-consistent intra-flake bridging (Phase 14) ---
-    #
-    # After the footprint-bounded grow, the graphene mask may still consist of
-    # multiple disconnected CCs.  This happens when the flake has mixed
-    # thickness: bright cores pass the LAB sigma cap, but dimmer surrounding
-    # regions are rejected and appear as gaps between the bright islands.
-    #
-    # The old MORPH_CLOSE inadvertently bridged these gaps (it was removed in
-    # Phase 13 to fix the AH02 over-grow).  This step replaces it with a
-    # physics-justified selective bridging: only pairs of CCs that share the
-    # same polarity, are both inside the footprint, have small chroma, AND are
-    # within BRIDGE_MAX_DISTANCE_UM apart are bridged via their convex hull.
-    #
-    # AH02 safety: AH02's seed (bright graphene) and the over-grown region
-    # (MORPH_CLOSE artefact) come from DIFFERENT polarity clusters or are well
-    # separated (>3 µm) — so the distance gate prevents re-introduction of the
-    # old over-grow.  The footprint constraint additionally ensures bridging
-    # cannot leak outside the top-flake spatial boundary.
-    if use_footprint_grow:
-        # Only bridge when the footprint-bounded grow was used — that is the
-        # path that produces multi-CC Swiss-cheese masks in need of bridging.
-        # For the no-footprint path, MORPH_CLOSE already handles the task.
-        seed_polarity_val = int(best.get('polarity', 0))
-        seed_rel_L_med_val = float(best.get('rel_L_med', 0.0))
-        bulk_mu_ab_val = np.array([a_bg, b_bg], dtype=np.float64)
-        grown = _bridge_polarity_consistent_ccs(
-            grown=grown,
-            lab=lab,
-            footprint_mask=_grow_footprint,
-            bulk_mu_ab=bulk_mu_ab_val,
-            seed_polarity=seed_polarity_val,
-            seed_rel_L_med=seed_rel_L_med_val,
-            pixel_size_um=pixel_size,
-        )
-
-    # --- Step 6: morph-clean and fill holes ---
     close_k2 = _kernel_from_um(GRAPHENE_MORPH_CLOSE_UM, pixel_size, ellipse=True)
     open_k2 = _kernel_from_um(GRAPHENE_MORPH_OPEN_UM, pixel_size, ellipse=True)
-    # Phase 13: when footprint-bounded grow was used, replace MORPH_CLOSE with
-    # flood_fill_holes-first strategy.
-    #
-    # MORPH_CLOSE (13×13 kernel) bridges across LAB-rejected gaps within the
-    # footprint, inflating area far beyond the grow result (e.g. AH02:
-    # grown=1024µm² → after_close=1802µm²; AH05: grown=475µm² → 813µm²).
-    # This inflation is incorrect when the gaps are real optical boundaries
-    # (e.g. hBN/graphene interfaces) rather than noise holes.
-    #
-    # The footprint-bounded grow produces a Swiss-cheese mask: pixels that passed
-    # the LAB sigma cap are set, those that failed are unset.  Some unset pixels
-    # form truly enclosed interior holes (no path to image boundary through the
-    # unset region) — these should be filled.  Others are large connected regions
-    # of non-graphene footprint material — these should NOT be filled.
-    #
-    # flood_fill_holes fills only enclosed holes by flood-filling from the image
-    # corner on the inverted mask.  This fills internal holes without bridging
-    # across large gap regions, giving the best of both approaches.
-    #
-    # For the no-footprint path, MORPH_CLOSE remains correct (no spatial prior
-    # is available, so we use morphological closure to smooth the boundary).
-    if use_footprint_grow:
-        # Phase 13: footprint-bounded grow path — use flood_fill_holes instead
-        # of MORPH_CLOSE to handle the Swiss-cheese grown mask.
-        #
-        # The footprint-bounded grow produces a Swiss-cheese mask: pixels that
-        # passed the LAB sigma cap are set, those that failed are unset.  Some
-        # unset pixels form truly enclosed interior holes (no path to image
-        # boundary through the unset region) — these should be filled.  Others
-        # are large connected regions of non-graphene footprint material — these
-        # should NOT be filled.
-        #
-        # flood_fill_holes fills only enclosed holes by flood-filling from the
-        # image corner on the inverted mask.  This fills internal holes without
-        # bridging across large gap regions.
-        #
-        # MORPH_CLOSE (0.5 µm = 13×13px kernel) is avoided because it bridges
-        # across LAB-rejected gaps within the footprint, inflating area far
-        # beyond the grow result (e.g. AH02: grown=1024µm² → 1802µm²; GT=784).
-        # When the footprint provides the hard spatial boundary, MORPH_CLOSE
-        # inflation is wrong — the rejected pixels are real optical boundaries
-        # (hBN/graphene interfaces), not noise holes.
-        final = flood_fill_holes(grown)
-        final = cv2.morphologyEx(final, cv2.MORPH_OPEN, open_k2)
-        final = keep_largest_n(final, n=1, min_area=AREA_MIN_ABS_PX)
-        final = flood_fill_holes(final)
-    else:
-        final = cv2.morphologyEx(grown, cv2.MORPH_CLOSE, close_k2)
-        final = cv2.morphologyEx(final, cv2.MORPH_OPEN, open_k2)
-        final = keep_largest_n(final, n=1, min_area=AREA_MIN_ABS_PX)
-        final = flood_fill_holes(final)
+    bulk_mu_ab_val = np.array([a_bg, b_bg], dtype=np.float64)
 
+    def _grow_refine_candidate(candidate: dict) -> tuple[np.ndarray, bool]:
+        base_mask = candidate['_cc_mask']
+        seed_grads = grad_mag[base_mask > 0]
+        seed_area_px = int((base_mask > 0).sum())
+        seed_abs_rel_L = float(abs(candidate.get('rel_L_med', 0.0)))
+        seed_fp_fraction = (
+            seed_area_px / max(fp_area_for_grow, 1)
+            if fp_area_for_grow > 0 else 1.0
+        )
+        use_footprint_grow = (
+            _grow_footprint is not None
+            and fp_area_for_grow > 0
+            and seed_abs_rel_L >= FOOTPRINT_GROW_MIN_SEED_CONTRAST
+            and seed_fp_fraction < FOOTPRINT_GROW_MAX_SEED_FRACTION
+        )
+        if use_footprint_grow:
+            seed_polarity_val = int(candidate.get('polarity', 0))
+            grown = _region_grow_footprint_bounded(
+                base_mask, lab, _grow_footprint, pixel_size,
+                seed_polarity=seed_polarity_val,
+                rel_L_image=rel_L,
+                grad_mag=grad_mag,
+            )
+            grown = _bridge_polarity_consistent_ccs(
+                grown=grown,
+                lab=lab,
+                footprint_mask=_grow_footprint,
+                bulk_mu_ab=bulk_mu_ab_val,
+                seed_polarity=seed_polarity_val,
+                seed_rel_L_med=float(candidate.get('rel_L_med', 0.0)),
+                pixel_size_um=pixel_size,
+            )
+            final_mask = flood_fill_holes(grown)
+            final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_OPEN, open_k2)
+            final_mask = keep_largest_n(final_mask, n=1, min_area=AREA_MIN_ABS_PX)
+            final_mask = flood_fill_holes(final_mask)
+        elif len(seed_grads) > 0 and float(np.percentile(seed_grads, 90)) > GRADIENT_EVIDENCE_FLOOR:
+            GROW_AREA_CAP_FACTOR = 1.50
+            grown = _region_grow_leakage_check(
+                base_mask, lab, grad_mag, flake, pixel_size, n_iter=2,
+                area_cap_px=int(seed_area_px * GROW_AREA_CAP_FACTOR),
+            )
+            final_mask = cv2.morphologyEx(grown, cv2.MORPH_CLOSE, close_k2)
+            final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_OPEN, open_k2)
+            final_mask = keep_largest_n(final_mask, n=1, min_area=AREA_MIN_ABS_PX)
+            final_mask = flood_fill_holes(final_mask)
+        else:
+            final_mask = cv2.morphologyEx(base_mask, cv2.MORPH_CLOSE, close_k2)
+            final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_OPEN, open_k2)
+            final_mask = keep_largest_n(final_mask, n=1, min_area=AREA_MIN_ABS_PX)
+            final_mask = flood_fill_holes(final_mask)
+        return final_mask, use_footprint_grow
+
+    for rank, rec in enumerate(cc_records[:GRAPHENE_CANDIDATE_TOP_N]):
+        panel_mask, used_footprint_grow = _grow_refine_candidate(rec)
+        rec['_panel_mask'] = panel_mask
+        rec['_panel_area_px'] = int((panel_mask > 0).sum())
+        rec['_panel_area_um2'] = rec['_panel_area_px'] * pixel_size * pixel_size
+        rec['_panel_footprint_grow'] = bool(used_footprint_grow)
+
+    final, use_footprint_grow = _grow_refine_candidate(best)
     cnts, _ = cv2.findContours(final, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contour = max(cnts, key=cv2.contourArea) if cnts else None
 

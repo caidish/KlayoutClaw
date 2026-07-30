@@ -70,7 +70,9 @@ prompt files or old rank selections as outside the rerun.
      `graphite_manual_prompts.json`, rerun with
      `--manual-prompts-json ... --use-sam2`, inspect candidate images, then
      rerun with the visually selected `--prompt-rank`.
-   - Graphene: use the same grid-first manual prompt loop as graphite. Inspect
+   - Graphene: use the same grid-first manual prompt loop as graphite. The SAM wrapper
+     forces `<detect_dir>/../align/footprint_mask.png` for the baseline/grid pass,
+     SAM candidate generation, and final `--prompt-rank` rerun. Inspect
      the mirrored `graphene_source_grid_80px.png` and mirrored `top_part`
      image, write `graphene_manual_prompts.json`, rerun with
      `--manual-prompts-json ... --use-sam2`, inspect only the fresh
@@ -87,7 +89,10 @@ prompt files or old rank selections as outside the rerun.
      continuous similar-color/brightness layered region without negatives
      between it and the target. If that continuation gradually loses layered
      contrast and becomes uniform hBN, place negatives immediately on the hBN
-     side of the local transition.
+     side of the local transition. Saturated white / high-exposure glare
+     regions are invalid graphene targets regardless of size or connectivity;
+     treat them as negative regions and do not choose a candidate whose main
+     area is a washed-out white/pink reflection.
 4. Do not assemble `detections.json`, run combine, run gdsalign, write
    `output/result.gds`, or report a score until both graphite and graphene have
    fresh manual prompt JSON files, fresh on-grid candidate images, and recorded
@@ -114,10 +119,9 @@ rank/ID through the relevant flag (`--cluster-id`, `--prompt-rank`,
 For SAM/manual graphite and graphene runs, candidate overlays must use red for
 the mask, green for positive prompt points, and orange for negative prompt
 points. Candidate 09/rank 8 is the baseline/refined fallback, not a SAM prompt
-result. Review and prefer SAM candidates 01-08 first. Choose rank 8 only if all
-SAM candidates are visibly wrong (for example hBN flooding, edge artifacts,
-tiny fragments, missing the target material, or wrong-material masks), and
-record the reason explicitly.
+result. Review all candidates using the same visual evidence standard; choose
+rank 8 when it is visually the best mask for the target material, and record
+the reason explicitly.
 
 For graphite/backgate visual choice, never reason from overlay color alone:
 blue/cyan hBN mask does not mean "not graphite". The target should be judged by
@@ -157,11 +161,11 @@ after combine before final commit/review/reporting.
 > - pixel_size: `<value>` um/px
 > - output_dir: `<out>/align`
 
-**What the subagent does:** Runs SIFT for bottom_part, runs the full Chamfer pipeline (source_contour 鈫?footprint 鈫?sweep 鈫?pick rotation 鈫?refine) for top_part. Makes its own rotation selection decision by viewing candidate images. **IMPORTANT**: refine.py takes 10-15 min 鈥?the subagent MUST run it as a foreground blocking Bash command with timeout=1200000. It must NOT use run_in_background or sleep/poll loops.
+**What the subagent does:** Runs SIFT for bottom_part, runs the full Chamfer pipeline (source_contour 鈫?footprint 鈫?sweep 鈫?pick rotation 鈫?refine) for top_part. Makes its own rotation selection decision by viewing candidate images. If source_mask and footprint_mask are different visible crops and normal footprint/refine attempts fail, the subagent MUST run `partial_fov_edge_align.py --write-warp-top` and use its replacement `warp_top.npy`; it must not accept the best bad full-mask refine result or continue downstream with that bad warp. **IMPORTANT**: refine.py takes 10-15 min 鈥?the subagent MUST run it as a foreground blocking Bash command with timeout=1200000. It must NOT use run_in_background or sleep/poll loops.
 
 **What it produces:** `warp_sift_bottom.npy`, `warp_top.npy`, `footprint_mask.png`, `footprint_contour.npy`, `alignment_report.json`
 
-**Before moving on:** Check `alignment_report.json` status is `"complete"`. If SIFT inliers < 20 or Chamfer IoU < 0.5, the subagent should have flagged the issue.
+**Before moving on:** Check `alignment_report.json` status is `"complete"`. If SIFT inliers < 20 or Chamfer IoU < 0.5, the subagent should have flagged the issue. If the issue is source/footprint visible-crop mismatch, `partial_fov_edge_align.py --write-warp-top` is mandatory before moving on.
 
 ---
 
@@ -174,7 +178,7 @@ after combine before final commit/review/reporting.
 > - bottom_part: `<path>` (for graphite)
 > - top_part: `<path>` (for graphene, `--mirror`)
 > - full_stack_raw: `<path>` (for bottom_hBN)
-> - footprint_mask: `<out>/align/footprint_mask.png` (for top_hBN and bottom_hBN)
+> - footprint_mask: `<out>/align/footprint_mask.png` (required for graphene, top_hBN, and bottom_hBN)
 > - footprint_contour: `<out>/align/footprint_contour.npy` (for top_hBN)
 > - pixel_size: `<value>` um/px
 > - output_dir: `<out>/detect`
@@ -183,11 +187,11 @@ after combine before final commit/review/reporting.
 task, graphite and graphene use the SAM wrapper grid-first manual prompt flow:
 run the baseline/grid pass, inspect the
 source grid images, write `graphite_manual_prompts.json` and
-`graphene_manual_prompts.json`, rerun with `--use-sam2`, visually inspect the
+`graphene_manual_prompts.json`, rerun graphene with `--use-sam2`; the wrapper forces `<detect_dir>/../align/footprint_mask.png`. Visually inspect the
 candidate images, record the chosen ranks, and rerun with explicit
-`--prompt-rank` before assembling `detections.json`. Candidate 09 remains the
-baseline/refined fallback inside the SAM candidate set; choose it only by the
-SAM visual-review rules.
+`--prompt-rank` before assembling `detections.json`; the wrapper keeps the footprint fixed. Candidate 09 remains the
+baseline/refined fallback inside the SAM candidate set; choose it by the same
+visual-review rules as the SAM candidates and record the reason.
 For bottom_hBN, inspect `low_confidence` / `winner_score` in the result JSON
 and escalate to vision-review when those signal a poor pick.
 

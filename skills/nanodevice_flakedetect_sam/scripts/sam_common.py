@@ -43,6 +43,7 @@ MASK_CONTOUR_BGR = (0, 0, 255)
 POSITIVE_POINT_BGR = (0, 255, 0)
 NEGATIVE_POINT_BGR = (0, 165, 255)
 GRAPHITE_PRIOR_CONTOUR_BGR = (0, 255, 255)
+_SAM2_PREDICTOR_CACHE: dict[tuple[str, str, str, str], Any] = {}
 
 
 def finalize_graphene_mask(graphene_mask: np.ndarray,
@@ -91,6 +92,33 @@ def _arg_value(args: list[str], name: str) -> str | None:
 
 def _has_flag(args: list[str], name: str) -> bool:
     return name in args
+
+
+def _with_required_graphene_footprint(passthrough: list[str],
+                                      output_dir: Path | None) -> list[str]:
+    """Force graphene calls to use the sibling align footprint mask."""
+    if output_dir is None:
+        raise SystemExit("graphene requires --output-dir so align/footprint_mask.png can be fixed")
+
+    footprint = output_dir.parent / "align" / "footprint_mask.png"
+    if not footprint.exists():
+        raise SystemExit(f"graphene requires align footprint at {footprint}")
+
+    fixed_args: list[str] = []
+    i = 0
+    while i < len(passthrough):
+        arg = passthrough[i]
+        if arg == "--footprint-mask":
+            i += 2
+            continue
+        if arg.startswith("--footprint-mask="):
+            i += 1
+            continue
+        fixed_args.append(arg)
+        i += 1
+
+    print(f"INFO: graphene forced --footprint-mask {footprint}")
+    return [*fixed_args, "--footprint-mask", str(footprint)]
 
 
 def _bool_from_report_value(value: Any) -> bool | None:
@@ -469,6 +497,36 @@ def _graphite_prior_paths(args: argparse.Namespace) -> list[Path | None]:
     ]
 
 
+def _infer_full_stack_image(image_arg: str | None) -> Path | None:
+    if image_arg is None:
+        return None
+    image_path = Path(image_arg)
+    candidate = image_path.parent / "full_stack_raw.jpg"
+    return candidate if candidate.exists() else None
+
+
+def _autofill_graphene_graphite_prior(args: argparse.Namespace,
+                                      out_dir: Path,
+                                      image_arg: str | None) -> None:
+    if any(path is not None for path in _graphite_prior_paths(args)):
+        return
+    graphite_mask = out_dir / "graphite_mask.png"
+    warp_sift_bottom = out_dir.parent / "align" / "warp_sift_bottom.npy"
+    warp_top = out_dir.parent / "align" / "warp_top.npy"
+    full_stack_image = _infer_full_stack_image(image_arg)
+    required = [graphite_mask, warp_sift_bottom, warp_top, full_stack_image]
+    if not all(path is not None and path.exists() for path in required):
+        return
+    args.graphite_prior_mask = graphite_mask
+    args.warp_sift_bottom = warp_sift_bottom
+    args.warp_top = warp_top
+    args.full_stack_image = full_stack_image
+    print(
+        "INFO: graphene graphite prior auto-filled from "
+        f"{graphite_mask}, {warp_sift_bottom}, {warp_top}, {full_stack_image}"
+    )
+
+
 def _write_required_graphite_prior(args: argparse.Namespace,
                                    out_dir: Path,
                                    clean_grid: np.ndarray,
@@ -762,7 +820,9 @@ def _try_sam2(image: np.ndarray, candidate: dict[str, Any], args: argparse.Names
         info["status"] = "missing_sam_root_or_checkpoint"
         return None, info
     import operator  # noqa: F401
-    sys.path.insert(0, str(sam_root))
+    sam_root_str = str(sam_root)
+    if sam_root_str not in sys.path:
+        sys.path.append(sam_root_str)
     try:
         import torch
         from sam2.build_sam import build_sam2
@@ -773,8 +833,24 @@ def _try_sam2(image: np.ndarray, candidate: dict[str, Any], args: argparse.Names
         return None, info
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = build_sam2(args.sam_config, str(checkpoint), device=device)
-        predictor = SAM2ImagePredictor(model)
+        allow_cpu = os.environ.get("KLAYOUTCLAW_ALLOW_SAM2_CPU", "").lower() in {"1", "true", "yes"}
+        if device != "cuda" and not allow_cpu:
+            raise SystemExit(
+                "SAM2 CUDA is required but torch.cuda.is_available() is false. "
+                "Do not clear CUDA_VISIBLE_DEVICES in Docker; set "
+                "KLAYOUTCLAW_ALLOW_SAM2_CPU=1 only for an explicit CPU debug run."
+            )
+        key = (
+            str(sam_root.resolve()),
+            str(args.sam_config),
+            str(checkpoint.resolve()),
+            device,
+        )
+        predictor = _SAM2_PREDICTOR_CACHE.get(key)
+        if predictor is None:
+            model = build_sam2(args.sam_config, str(checkpoint), device=device)
+            predictor = SAM2ImagePredictor(model)
+            _SAM2_PREDICTOR_CACHE[key] = predictor
         predictor.set_image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         pts = np.array(candidate["positive_points"] + candidate["negative_points"], dtype=np.float32)
         labels = np.array([1] * len(candidate["positive_points"]) + [0] * len(candidate["negative_points"]), dtype=np.int32)
@@ -1015,6 +1091,7 @@ def run_prompt_wrapper(material: str) -> int:
     out_dir = Path(out_arg) if out_arg is not None else None
     graphene_mirrored = False
     if material == "graphene":
+        passthrough = _with_required_graphene_footprint(passthrough, out_dir)
         graphene_mirrored = _graphene_should_mirror_from_align(
             passthrough,
             fallback=_has_flag(passthrough, "--mirror"),
@@ -1063,6 +1140,7 @@ def run_prompt_wrapper(material: str) -> int:
                 clean_grid)
     graphite_prior_mask = None
     if material == "graphene":
+        _autofill_graphene_graphite_prior(args, out_dir, image_arg)
         graphite_prior_mask = _write_required_graphite_prior(
             args,
             out_dir,
