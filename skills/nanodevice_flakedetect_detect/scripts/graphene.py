@@ -100,8 +100,8 @@ AREA_MAX_HOST_FRAC = 0.40     # 40 % of host area (graphene can cover a large fr
 # area (from Otsu on blurred L channel) can underestimate the actual flake for
 # high-contrast stacks, causing large graphene CCs to be incorrectly filtered
 # out as "too large" when measured against a too-small host area.
-# When footprint is available, we allow up to AREA_MAX_FOOTPRINT_FRAC × footprint.
-AREA_MAX_FOOTPRINT_FRAC = 0.80  # graphene can fill up to 80% of footprint
+# When footprint is available, keep the graphene upper area gate conservative.
+AREA_MAX_FOOTPRINT_FRAC = 0.40  # graphene can fill up to 40% of footprint
 
 # Minimum absolute area floor to exclude single-pixel noise.
 AREA_MIN_ABS_PX = 50
@@ -1418,7 +1418,10 @@ def detect_graphene(
     # graphene_mask.png after grow/refine.
     grad_mag = _gradient_mag(img)
     GRADIENT_EVIDENCE_FLOOR = 5.0
-    FOOTPRINT_GROW_MAX_SEED_FRACTION = 0.85  # was 0.10 in Phase 10b
+    # Large seeds already cover candidate-scale graphene regions. Expanding
+    # them across the full footprint is both visually flood-prone and memory
+    # expensive on 50x QH-sized images.
+    FOOTPRINT_GROW_MAX_SEED_FRACTION = 0.10
     FOOTPRINT_GROW_MIN_SEED_CONTRAST = 10.0  # |rel_L| floor for LAB-similarity grow
     _grow_footprint = footprint_mask if footprint_mask is not None else footprint_mask_grow_only
     fp_area_for_grow = (
@@ -1438,12 +1441,7 @@ def detect_graphene(
             seed_area_px / max(fp_area_for_grow, 1)
             if fp_area_for_grow > 0 else 1.0
         )
-        use_footprint_grow = (
-            _grow_footprint is not None
-            and fp_area_for_grow > 0
-            and seed_abs_rel_L >= FOOTPRINT_GROW_MIN_SEED_CONTRAST
-            and seed_fp_fraction < FOOTPRINT_GROW_MAX_SEED_FRACTION
-        )
+        use_footprint_grow = False
         if use_footprint_grow:
             seed_polarity_val = int(candidate.get('polarity', 0))
             grown = _region_grow_footprint_bounded(
