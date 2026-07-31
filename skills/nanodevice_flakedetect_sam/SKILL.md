@@ -12,7 +12,18 @@ passes remain part of this flow for source grids and candidate 09 fallback.
 
 ## Required References
 
-Before taking an action, read the matching reference first:
+Before taking an action, read the matching reference first. This is a hard
+gate, not background advice.
+
+You MUST read the full matching reference file before the action it governs,
+using a command that prints the file contents such as `cat`, `sed -n '1,240p'`,
+or `Get-Content`. Keyword search, `rg`, file listings, partial excerpts, or
+memory of a previous run do not satisfy this requirement.
+
+After reading references for a stage, write or append a short sidecar note under
+the detect output directory, for example `<detect_dir>/reference_reads.md`, with
+the stage name and exact reference paths read. Do not continue to the governed
+action until that note exists.
 
 | Before you... | Read this reference |
 | --- | --- |
@@ -25,6 +36,10 @@ Before taking an action, read the matching reference first:
 | Generate graphene SAM candidates after manual prompts | `references/contract-and-runtime.md` and `references/graphene-prompts.md` |
 | Choose or freeze a graphene prompt rank, including zero-overlap retries | `references/graphene-prompts.md` and `references/visual-review.md` |
 | Continue to `detections.json`, combine, gdsalign, output GDS, or score | `references/contract-and-runtime.md`, `references/visual-review.md`, and the material prompt references for any material whose selection changed |
+
+If a required reference was not read immediately before the governed stage,
+stop and read it before proceeding. If you are unsure whether it was read, treat
+it as unread.
 
 If the user asks for a fresh rerun, fresh point selection, or says not to reuse
 old selections, old prompt JSON, visual selection JSON, candidate images,

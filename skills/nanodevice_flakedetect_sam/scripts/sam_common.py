@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -895,10 +896,16 @@ def _try_sam2(image: np.ndarray, candidate: dict[str, Any], args: argparse.Names
             model = build_sam2(args.sam_config, str(checkpoint), device=device)
             predictor = SAM2ImagePredictor(model)
             _SAM2_PREDICTOR_CACHE[key] = predictor
-        with torch.inference_mode():
-            predictor.set_image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            pts = np.array(candidate["positive_points"] + candidate["negative_points"], dtype=np.float32)
-            labels = np.array([1] * len(candidate["positive_points"]) + [0] * len(candidate["negative_points"]), dtype=np.int32)
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pts = np.array(candidate["positive_points"] + candidate["negative_points"], dtype=np.float32)
+        labels = np.array([1] * len(candidate["positive_points"]) + [0] * len(candidate["negative_points"]), dtype=np.int32)
+        autocast_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if device == "cuda"
+            else contextlib.nullcontext()
+        )
+        with torch.inference_mode(), autocast_ctx:
+            predictor.set_image(rgb)
             masks, scores, _ = predictor.predict(point_coords=pts, point_labels=labels, multimask_output=False)
         info["status"] = "ok"
         info["score"] = float(scores[0]) if len(scores) else None
