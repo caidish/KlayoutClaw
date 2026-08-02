@@ -195,7 +195,7 @@ function registerFlakedetectTools(): CodeGenTool[] {
           scripts: {
             graphite: {
               command: `python ${scriptsDir}/graphite.py --image <bottom_part_image> --pixel-size <px> --output-dir <out>/detect/`,
-              check: "View 00_graphite_candidates.png. Graphite is typically 2nd-darkest, not absolute darkest. Override with --cluster-id <N> if auto-selection wrong.",
+              check: "View refined_candidates.png and graphite_result.json.top_candidates. Graphite is typically 2nd-darkest, not absolute darkest. Override with --cluster-id <N> if auto-selection wrong.",
               look_for: "Coherent dark elongated strip — not scattered edges or fold lines",
             },
             graphene: {
@@ -214,8 +214,10 @@ function registerFlakedetectTools(): CodeGenTool[] {
           },
           notes: [
             "All 4 scripts can run in parallel (independent).",
+            "Graphite writes refined_candidates.png, graphite_candidate_masks.npz, and selected/top_candidates metadata in graphite_result.json.",
             "Graphene writes a real ranked candidate panel at 00_graphene_candidates.png plus selected/top_candidates metadata in graphene_result.json.",
             "After all complete, assemble detections.json by reading each *_result.json.",
+            "For graphite and graphene, preserve candidate_masks_file, selected_rank, and selected.score as selected_score in detections.json so combine can auto-switch the lower-scoring material to an overlapping candidate when needed.",
             "Include mirrored: true for graphene if --mirror was used.",
           ],
           args,
