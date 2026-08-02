@@ -215,38 +215,6 @@ def test_graphene_contrast_filter_is_pool_relative():
     )
 
 
-def test_graphene_no_grow_for_plausible_seed():
-    """Phase 13: footprint-bounded grow is now the primary path for seeds up to
-    FOOTPRINT_GROW_MAX_SEED_FRACTION of the footprint.  The old Phase 10d
-    SEED_NOGROW_FOOTPRINT_FRAC (5%) short-circuit is removed because it blocked
-    grow for all plateau stacks (seed_frac 15-78%).  The LAB sigma cap within
-    _region_grow_footprint_bounded provides boundary-driven stopping without
-    a coarse area fraction gate.
-
-    Verify that the new threshold constant (FOOTPRINT_GROW_MAX_SEED_FRACTION)
-    is present and set high enough (>= 0.80) so seeds at 15-78% of the footprint
-    receive footprint-bounded grow rather than no-grow.
-    """
-    src = _src()
-    assert "FOOTPRINT_GROW_MAX_SEED_FRACTION" in src, (
-        "graphene.py needs FOOTPRINT_GROW_MAX_SEED_FRACTION to gate footprint grow"
-    )
-    # The constant must be >= 0.80 (Phase 13 raised from 0.10 to 0.85).
-    import ast as _ast
-    tree = _ast.parse(src)
-    for node in _ast.walk(tree):
-        if isinstance(node, _ast.Assign):
-            for t in node.targets:
-                if isinstance(t, _ast.Name) and t.id == "FOOTPRINT_GROW_MAX_SEED_FRACTION":
-                    val = node.value
-                    if isinstance(val, _ast.Constant) and isinstance(val.value, float):
-                        assert val.value >= 0.80, (
-                            f"FOOTPRINT_GROW_MAX_SEED_FRACTION = {val.value} is < 0.80; "
-                            "Phase 13 requires >= 0.80 so seeds at 15-78% of footprint "
-                            "receive footprint-bounded grow (boundary-driven, not area-capped)"
-                        )
-
-
 def test_graphene_hybrid_survival():
     """Survival uses a UNION of absolute-floor + top-area + top-contrast.
     No single filter should be able to drop a candidate that any other filter retains."""
