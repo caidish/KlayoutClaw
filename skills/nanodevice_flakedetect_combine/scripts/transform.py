@@ -145,11 +145,33 @@ def build_masks(detections, detect_dir, warp_bot_inv, warp_top, footprint,
     stage_counts = {}
     materials = detections.get("materials", {})
 
-    # --- graphite: transform contour from bottom_part coords ---
+    # --- graphite: transform mask from bottom_part coords ---
     if "graphite" in materials:
         info = materials["graphite"]
-        contour_path = os.path.join(detect_dir, info["contour_file"])
-        if os.path.exists(contour_path) and warp_bot_inv is not None:
+        contour_path = None
+        mask_path = os.path.join(detect_dir, info.get("mask_file", ""))
+        if os.path.exists(mask_path) and warp_bot_inv is not None:
+            graphite_mask_raw = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if graphite_mask_raw is not None:
+                counts = {"input_pixels": _pixel_count(graphite_mask_raw)}
+                graphite_mask = cv2.warpAffine(
+                    graphite_mask_raw, warp_bot_inv, (w, h),
+                    flags=cv2.INTER_NEAREST,
+                )
+                counts["post_warp_pixels"] = _pixel_count(graphite_mask)
+                counts["post_keep_largest_pixels"] = _pixel_count(graphite_mask)
+                dropped = _detect_dropped_stage(counts)
+                if dropped is not None:
+                    counts["dropped_at_stage"] = dropped
+                    stage_counts["graphite"] = counts
+                    raise MaskDroppedError("graphite", dropped, counts)
+                stage_counts["graphite"] = counts
+                masks["graphite"] = graphite_mask
+        if "graphite" not in masks and "contour_file" in info:
+            contour_path = os.path.join(detect_dir, info["contour_file"])
+            if not (os.path.exists(contour_path) and warp_bot_inv is not None):
+                contour_path = None
+        if "graphite" not in masks and contour_path:
             contour = np.load(contour_path).reshape(-1, 2).astype(np.float64)
             counts = {"input_pixels": int(len(contour))}
             transformed = transform_contour(contour, warp_bot_inv)

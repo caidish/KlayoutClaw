@@ -59,7 +59,7 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_flakedetect_co
 
 | Material | Coordinate System | Transform |
 |----------|------------------|-----------|
-| graphite | bottom_part | Invert `warp_sift_bottom.npy`, apply to contour |
+| graphite | bottom_part | Invert `warp_sift_bottom.npy`, apply to mask (INTER_NEAREST), re-extract all contours; falls back to contour only when mask is unavailable |
 | graphene | top_part (mirrored) | Apply `warp_top.npy` to mask (INTER_NEAREST), clip to footprint, morph clean, re-extract contour |
 | bottom_hBN | full_stack | Pass through (already in target coords) |
 | top_hBN | full_stack | Pass through (= footprint) |
@@ -83,7 +83,7 @@ Every material reports its pixel count at each pipeline stage so the orchestrato
 
 | Material | Stage keys |
 |----------|------------|
-| graphite | `input_pixels`, `post_keep_largest_pixels` |
+| graphite | `input_pixels`, `post_warp_pixels`, `post_keep_largest_pixels` |
 | graphene | `input_pixels`, `post_warp_pixels`, `post_bitwise_and_pixels`, `post_morph_pixels`, `post_keep_largest_pixels` |
 | bottom_hBN, top_hBN | `input_pixels`, `post_keep_largest_pixels` |
 
