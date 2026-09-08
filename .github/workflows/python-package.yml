@@ -1,0 +1,62 @@
+name: Python package
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and test uv tool artifact
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.10"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Run dependency-light tests
+        run: uv run --isolated --no-project --with pytest pytest packaging_tests
+
+      - name: Build wheel and source distribution
+        run: uv build --no-sources
+
+      - name: Validate artifact contents
+        run: uv run --no-project python scripts/validate_artifacts.py dist
+
+      - name: Install and exercise the built wheel through uv
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/uv-tools
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/uv-bin
+          KLAYOUT_TARGET: ${{ runner.temp }}/KLayout home ü/pymacros
+        run: |
+          uv tool install --no-index --find-links dist --python 3.12 klayoutclaw
+          "$UV_TOOL_BIN_DIR/klayoutclaw" --version
+          "$UV_TOOL_BIN_DIR/klayoutclaw" install --target-dir "$KLAYOUT_TARGET"
+          "$UV_TOOL_BIN_DIR/klayoutclaw" status --target-dir "$KLAYOUT_TARGET" --json
+          "$UV_TOOL_BIN_DIR/klayoutclaw" doctor --target-dir "$KLAYOUT_TARGET" --json
+          python -c 'import json,os,pathlib; p=pathlib.Path(os.environ["KLAYOUT_TARGET"])/"klayoutclaw-runtime.json"; assert json.loads(p.read_text())["worker_python"].startswith(os.environ["UV_TOOL_DIR"])'
+          "$UV_TOOL_BIN_DIR/klayoutclaw" uninstall --target-dir "$KLAYOUT_TARGET"
+
+      - name: Resolve and diagnose the optional workers extra
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/uv-worker-tools
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/uv-worker-bin
+          KLAYOUT_TARGET: ${{ runner.temp }}/KLayout workers/pymacros
+          DOCTOR_REPORT: ${{ runner.temp }}/worker-doctor.json
+        run: |
+          uv tool install --find-links dist --python 3.11 'klayoutclaw[workers]'
+          "$UV_TOOL_BIN_DIR/klayoutclaw" install --target-dir "$KLAYOUT_TARGET"
+          "$UV_TOOL_BIN_DIR/klayoutclaw" doctor --target-dir "$KLAYOUT_TARGET" --json > "$DOCTOR_REPORT"
+          python -c 'import json,os,pathlib; r=json.loads(pathlib.Path(os.environ["DOCTOR_REPORT"]).read_text()); assert r["workers"]["status"] == "available"'
+          "$UV_TOOL_DIR/klayoutclaw/bin/python" -c 'import os,runpy; root=os.environ["KLAYOUT_TARGET"]; [runpy.run_path(os.path.join(root,name), run_name="__klayoutclaw_smoke__") for name in ("ordered_loop.py","two_level.py","route_worker.py","evaluate_worker.py")]'

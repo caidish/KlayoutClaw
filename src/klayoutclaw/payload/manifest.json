@@ -1,0 +1,72 @@
+{
+  "files": [
+    {
+      "destination": "klayoutclaw_server.lym",
+      "resource": "plugin/klayoutclaw_server.lym",
+      "sha256": "c17e771d3cf073d8867a95f2c590867045808737cf62240e87a26dad41b0d99f",
+      "source": "plugin/klayoutclaw_server.lym"
+    },
+    {
+      "destination": "klayoutclaw_ui.lym",
+      "resource": "plugin/klayoutclaw_ui.lym",
+      "sha256": "60030ae3e53f8f7a6a42e0bd9495a6a856bc3336b8374bda6dc155aef15c07a1",
+      "source": "plugin/klayoutclaw_ui.lym"
+    },
+    {
+      "destination": "evaluate_worker.py",
+      "resource": "tools/evaluate_worker.py",
+      "sha256": "0433fedb4b7cbcd9165fdf53d43155773baa5a13a61e1a6a9c586207c8266ff3",
+      "source": "tools/evaluate_worker.py"
+    },
+    {
+      "destination": "ordered_loop.py",
+      "resource": "tools/ordered_loop.py",
+      "sha256": "14e6c07c669177f825ffed2a3a9ceaff201cdee84e0972599dd67d486289b153",
+      "source": "tools/ordered_loop.py"
+    },
+    {
+      "destination": "route_worker.py",
+      "resource": "tools/route_worker.py",
+      "sha256": "e80ea1ec06beb0a249d3f2b9f760fca1e22ee8b2b86b339ffa4c83588a943f19",
+      "source": "tools/route_worker.py"
+    },
+    {
+      "destination": "two_level.py",
+      "resource": "tools/two_level.py",
+      "sha256": "44d9aeb61b37378513a7228af8d31750ca7f2c7a68b7204c02b460e4771b64a6",
+      "source": "tools/two_level.py"
+    },
+    {
+      "destination": "tools/vc_mcp_handlers.py",
+      "resource": "tools/vc_mcp_handlers.py",
+      "sha256": "f79fa6c402fd98c515bc669e25c8627f6eb3fff7459686c167d7906ac7cb6b95",
+      "source": "tools/vc_mcp_handlers.py"
+    },
+    {
+      "destination": "plugin/klayoutclaw_vc/__init__.py",
+      "resource": "plugin/klayoutclaw_vc/__init__.py",
+      "sha256": "6f25aa6e61d7593ef0d2b8748bc6721637741d1c12c9e5e897d6269c307c26d9",
+      "source": "plugin/klayoutclaw_vc/__init__.py"
+    },
+    {
+      "destination": "plugin/klayoutclaw_vc/repo.py",
+      "resource": "plugin/klayoutclaw_vc/repo.py",
+      "sha256": "e324f768d57dec5012a1d30ec8c5392122fe0e0459218c8f6d679b8f97ec2ef2",
+      "source": "plugin/klayoutclaw_vc/repo.py"
+    },
+    {
+      "destination": "plugin/klayoutclaw_vc/serializer.py",
+      "resource": "plugin/klayoutclaw_vc/serializer.py",
+      "sha256": "b5a8932b7612cc4c9777e89b88b49fbac694c9635130efcbc58e2144e6520f66",
+      "source": "plugin/klayoutclaw_vc/serializer.py"
+    },
+    {
+      "destination": "plugin/klayoutclaw_vc/ui.py",
+      "resource": "plugin/klayoutclaw_vc/ui.py",
+      "sha256": "e81056b6649db7ff608c427a0cf04babba3233011f5f75238938d0b3743f030b",
+      "source": "plugin/klayoutclaw_vc/ui.py"
+    }
+  ],
+  "schema": 1,
+  "version": "0.6.0"
+}
