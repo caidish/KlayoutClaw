@@ -130,7 +130,7 @@ export function createTestConfig(
 }
 
 /**
- * Create a real MCPManager connected to KLayout at :8765 if available.
+ * Create a real MCPManager connected to KLAYOUT_MCP_URL (default :8765) if available.
  * Callers should handle connection failure gracefully.
  */
 export async function createTestMcpManager(): Promise<unknown> {

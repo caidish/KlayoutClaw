@@ -1,15 +1,49 @@
 #!/usr/bin/env python
 """Install KlayoutClaw MCP server plugin into KLayout's pymacros directory."""
 
+import json
 import shutil
 import sys
 from pathlib import Path
 
 
+def ensure_user_config(klayout_home: Path) -> tuple[Path, bool]:
+    """Create the editable per-user server config without overwriting it."""
+    config_path = klayout_home / "klayoutclaw.json"
+    if config_path.exists():
+        return config_path, False
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "bind": "127.0.0.1",
+                    "port": 8765,
+                    "endpoint": "/mcp",
+                    "tls": False,
+                    "certificate": "",
+                    "private_key": "",
+                    "key_algorithm": "rsa",
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return config_path, True
+
+
 def main():
     plugin_dir = Path(__file__).parent / "plugin"
-    klayout_dir = Path.home() / ".klayout" / "pymacros"
+    klayout_home = Path.home() / ".klayout"
+    klayout_dir = klayout_home / "pymacros"
     klayout_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path, config_created = ensure_user_config(klayout_home)
+    if config_created:
+        print(f"Created: {config_path}")
+    else:
+        print(f"Preserved: {config_path}")
 
     for lym_file in ["klayoutclaw_server.lym", "klayoutclaw_ui.lym"]:
         src = plugin_dir / lym_file
@@ -65,7 +99,9 @@ def main():
 
     print("\nDone! No external Python dependencies needed (uses only stdlib + pya).")
     print("Restart KLayout to activate the MCP server.")
-    print("The server will be available at http://127.0.0.1:8765/mcp")
+    print("The server defaults to http://127.0.0.1:8765/mcp.")
+    print(f"Edit {config_path} to configure TLS, port, and endpoint.")
+    print("Environment variables override the matching config-file values.")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ of the known label names, fall back to a single-entry config, handle
 qlaybot's flat ``klayout.json`` shape, and raise a useful ``KeyError``
 when no entry can be resolved. No network access, no KLayout needed.
 """
+import json
 import os
 import sys
 
@@ -22,7 +23,12 @@ _SKILLS_SCRIPTS = os.path.abspath(
 if _SKILLS_SCRIPTS not in sys.path:
     sys.path.insert(0, _SKILLS_SCRIPTS)
 
-from mcp_client import _extract_mcp_url  # noqa: E402
+from mcp_client import (  # noqa: E402, I001
+    _entry_url,
+    _extract_mcp_url,
+    _url_from_server_config,
+    load_mcp_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +39,23 @@ def test_resolves_legacy_klayoutclaw_label():
     """The plugin's own mcp_config.json shape must still work."""
     cfg = {"mcpServers": {"klayoutclaw": {"url": "http://127.0.0.1:8765/mcp"}}}
     assert _extract_mcp_url(cfg, "legacy.json") == "http://127.0.0.1:8765/mcp"
+
+
+def test_resolves_claude_env_default_argument(monkeypatch):
+    entry = {
+        "command": "npx",
+        "args": [
+            "mcp-remote",
+            "${KLAYOUT_MCP_URL:-http://127.0.0.1:8765/mcp}",
+            "--allow-http",
+        ],
+    }
+
+    monkeypatch.delenv("KLAYOUT_MCP_URL", raising=False)
+    assert _entry_url(entry) == "http://127.0.0.1:8765/mcp"
+
+    monkeypatch.setenv("KLAYOUT_MCP_URL", "http://127.0.0.1:8766/mcp")
+    assert _entry_url(entry) == "http://127.0.0.1:8766/mcp"
 
 
 def test_resolves_qlaybot_klayout_label():
@@ -105,16 +128,27 @@ def test_empty_mcp_servers_with_no_top_level_url_raises():
         _extract_mcp_url(cfg, "empty.json")
 
 
-def test_url_heuristic_resolves_klayout_named_url():
-    """Multi-entry config with one URL whose host/path mentions klayout."""
+def test_label_heuristic_resolves_custom_klayout_server():
+    """Multi-entry config resolves a custom label rather than a port hint."""
     cfg = {
         "mcpServers": {
             "other-mcp": {"url": "http://example.com/api"},
-            "weird-name": {"url": "http://127.0.0.1:8765/mcp"},
+            "my-dev-klayout": {"url": "http://127.0.0.1:8766/mcp"},
         }
     }
-    # The heuristic picks the entry with :8765/mcp.
-    assert _extract_mcp_url(cfg, "heur.json") == "http://127.0.0.1:8765/mcp"
+    assert _extract_mcp_url(cfg, "heur.json") == "http://127.0.0.1:8766/mcp"
+
+
+def test_default_port_does_not_identify_klayout_in_ambiguous_config():
+    """Port 8765 alone is not proof of identity because AnkiConnect uses it."""
+    cfg = {
+        "mcpServers": {
+            "anki": {"url": "http://127.0.0.1:8765/mcp"},
+            "other": {"url": "http://example.com/mcp"},
+        }
+    }
+    with pytest.raises(KeyError):
+        _extract_mcp_url(cfg, "ambiguous.json")
 
 
 # ---------------------------------------------------------------------------
@@ -123,14 +157,11 @@ def test_url_heuristic_resolves_klayout_named_url():
 
 def test_load_mcp_config_accepts_qlaybot_klayout_label(tmp_path, monkeypatch):
     """Regression for commit_gds.py: qlaybot writes "klayout" as the label."""
-    from mcp_client import load_mcp_config  # re-import for isolation
-    import json as _json
-
     # Pre-condition: clear KLAYOUT_MCP_URL so file lookup is actually used.
     monkeypatch.delenv("KLAYOUT_MCP_URL", raising=False)
 
     cfg_path = tmp_path / "qlaybot_style.json"
-    cfg_path.write_text(_json.dumps({
+    cfg_path.write_text(json.dumps({
         "mcpServers": {
             "klayout": {"type": "http", "url": "http://127.0.0.1:8765/mcp"}
         }
@@ -138,3 +169,63 @@ def test_load_mcp_config_accepts_qlaybot_klayout_label(tmp_path, monkeypatch):
 
     url = load_mcp_config(str(cfg_path))
     assert url == "http://127.0.0.1:8765/mcp"
+
+
+def test_server_config_builds_http_url():
+    cfg = {"mcp": {"tls": False, "port": 8766, "endpoint": "/custom-mcp"}}
+    assert _url_from_server_config(cfg, "server.json") == (
+        "http://127.0.0.1:8766/custom-mcp"
+    )
+
+
+def test_server_config_builds_https_url():
+    cfg = {
+        "mcp": {
+            "tls": True,
+            "bind": "localhost",
+            "port": 9443,
+            "endpoint": "/secure-mcp",
+        }
+    }
+    assert _url_from_server_config(cfg, "server.json") == (
+        "https://localhost:9443/secure-mcp"
+    )
+
+
+def test_server_config_uses_loopback_for_wildcard_bind():
+    cfg = {"mcp": {"bind": "0.0.0.0", "port": 8766, "endpoint": "/mcp"}}
+    assert _url_from_server_config(cfg, "server.json") == (
+        "http://127.0.0.1:8766/mcp"
+    )
+
+
+def test_local_server_config_precedes_repository_config(tmp_path, monkeypatch):
+    server_config = tmp_path / "klayoutclaw.json"
+    server_config.write_text(json.dumps({
+        "mcp": {"tls": False, "port": 8766, "endpoint": "/desktop-mcp"}
+    }))
+    (tmp_path / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "klayoutclaw": {"url": "http://127.0.0.1:8765/mcp"}
+        }
+    }))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KLAYOUT_MCP_URL", raising=False)
+    monkeypatch.setenv("KLAYOUT_MCP_CONFIG", str(server_config))
+
+    assert load_mcp_config() == "http://127.0.0.1:8766/desktop-mcp"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"mcp": {"tls": "sometimes"}},
+        {"mcp": {"port": 0}},
+        {"mcp": {"port": 65536}},
+        {"mcp": {"endpoint": ""}},
+        {"mcp": {"endpoint": "/mcp?query=1"}},
+    ],
+)
+def test_server_config_url_rejects_invalid_values(config):
+    with pytest.raises(ValueError):
+        _url_from_server_config(config, "server.json")

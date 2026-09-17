@@ -3,6 +3,7 @@
 and captures the full agent transcript.
 """
 
+import json
 import os
 import subprocess
 import time
@@ -13,6 +14,7 @@ REPO_ROOT = os.path.normpath(os.path.join(_SCRIPT_DIR, "..", "..", ".."))
 DEFAULT_MCP_CONFIG = os.path.join(REPO_ROOT, "mcp_config.json")
 DEFAULT_MODEL = os.environ.get("E2E_AGENT_MODEL", "sonnet")
 DEFAULT_AGENT = os.environ.get("E2E_AGENT", "qlaybot")
+KLAYOUT_MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 
 @dataclass
@@ -44,6 +46,15 @@ def run_agent(prompt: str, timeout: int = 120, mcp_config: str = None,
     Returns the full agent transcript (stdout + stderr).
     """
     config = mcp_config or DEFAULT_MCP_CONFIG
+    if mcp_config is None and os.environ.get("KLAYOUT_MCP_URL"):
+        config = json.dumps({
+            "mcpServers": {
+                "klayoutclaw": {
+                    "type": "http",
+                    "url": KLAYOUT_MCP_URL,
+                },
+            },
+        })
     mdl = model or DEFAULT_MODEL
     agent_type = agent or DEFAULT_AGENT
 
@@ -77,7 +88,6 @@ def run_agent(prompt: str, timeout: int = 120, mcp_config: str = None,
         # For qlaybot JSON mode, extract the response text
         if agent_type == "qlaybot" and transcript.strip().startswith("{"):
             try:
-                import json
                 result = json.loads(transcript)
                 transcript = result.get("response", transcript)
             except (json.JSONDecodeError, KeyError):
@@ -111,10 +121,10 @@ def run_agent(prompt: str, timeout: int = 120, mcp_config: str = None,
     )
 
 
-def check_mcp_server(url: str = "http://127.0.0.1:8765/mcp") -> bool:
+def check_mcp_server(url: str = None) -> bool:
     """Quick connectivity check — is the KLayout MCP server reachable?"""
     from verifier import MCPClient
-    client = MCPClient(url)
+    client = MCPClient(url or KLAYOUT_MCP_URL)
     return client.is_available()
 
 

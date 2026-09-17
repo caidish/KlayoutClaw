@@ -23,10 +23,12 @@ from pathlib import Path
 
 import pytest
 
+from mcp_identity import is_klayoutclaw
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LYM_PATH = REPO_ROOT / "plugin" / "klayoutclaw_server.lym"
-MCP_URL = "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 
 def _server_source() -> str:
@@ -92,16 +94,7 @@ def test_no_crossings_yields_null_image_path():
 # ---------------------------------------------------------------------------
 
 def _mcp_available() -> bool:
-    try:
-        payload = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "ping"}).encode()
-        req = urllib.request.Request(
-            MCP_URL, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2)
-        return True
-    except (urllib.error.URLError, OSError):
-        return False
+    return is_klayoutclaw(MCP_URL)
 
 
 def _plugin_supports_image_path() -> bool:

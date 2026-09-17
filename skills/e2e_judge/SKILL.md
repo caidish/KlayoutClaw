@@ -9,7 +9,7 @@ End-to-end agentic test suite. Each test gives Claude Code a natural-language ta
 
 ## Prerequisites
 
-- KLayout running with KlayoutClaw plugin (MCP on 127.0.0.1:8765)
+- KLayout running with KlayoutClaw plugin (`KLAYOUT_MCP_URL`, default `http://127.0.0.1:8765/mcp`)
 - `claude` CLI on PATH (Claude Code)
 - Network access to `http://api.physcai.com` (LLM judge)
 

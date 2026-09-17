@@ -6,7 +6,7 @@ discover tools/skills and produce results, then independently verifies
 the outcome via direct MCP calls, and judges both transcript + verification.
 
 Requires:
-  - KLayout running with KlayoutClaw plugin (MCP on 127.0.0.1:8765)
+  - KLayout running with KlayoutClaw plugin (KLAYOUT_MCP_URL, default :8765)
   - Claude Code CLI on PATH
   - Network access to api.physcai.com (LLM judge)
 
@@ -30,7 +30,7 @@ from conftest import (
 )
 from harness import run_agent, reset_layout, check_mcp_server, REPO_ROOT
 from judge import judge
-from verifier import MCPClient, run_verification
+from verifier import KLAYOUT_URL, MCPClient, run_verification
 from verifier_phase5 import run_verification_phase5, _REGISTRY as PHASE5_REGISTRY
 
 # ---------------------------------------------------------------------------
@@ -1062,7 +1062,7 @@ def run_tests(tests: list[AgenticTestCase], filter_test: str = None,
     # Initialize MCP client for verification
     client = MCPClient()
     if not client.is_available():
-        print("  ERROR: KLayout MCP server not available at 127.0.0.1:8765")
+        print(f"  ERROR: KLayout MCP server not available at {KLAYOUT_URL}")
         print("  Start KLayout with KlayoutClaw plugin first.")
         sys.exit(1)
 
@@ -1130,7 +1130,7 @@ def main():
     print("  KlayoutClaw Phase 5 Agentic E2E Test Runner")
     agent_name = os.environ.get("E2E_AGENT", "qlaybot")
     print(f"  Agent: {agent_name} (autonomous tool/skill discovery)")
-    print("  Verifier: direct MCP calls to 127.0.0.1:8765")
+    print(f"  Verifier: direct MCP calls to {KLAYOUT_URL}")
     print("  Judge: gpt-5-mini @ api.physcai.com")
     print(f"  Tests: {len(all_tests)}")
     print()

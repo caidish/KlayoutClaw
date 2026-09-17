@@ -27,6 +27,8 @@ import urllib.request
 import urllib.error
 
 import pytest
+
+from mcp_identity import is_klayoutclaw
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -37,7 +39,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HALLBAR_SKILL = os.path.join(PROJECT_ROOT, "skills", "nanodevice_hallbar", "SKILL.md")
 E2E_SKILL = os.path.join(PROJECT_ROOT, "skills", "nanodevice_e2e_design", "SKILL.md")
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 # python_path override: the MCP server's conda activation path may be wrong
 # (e.g. hardcoded miniforge3 when anaconda3 is installed). Use python_path
@@ -71,16 +73,7 @@ _session_id = None
 
 def _mcp_available():
     """Check if the KLayout MCP server is reachable."""
-    try:
-        payload = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "ping"}).encode()
-        req = urllib.request.Request(
-            MCP_URL, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2)
-        return True
-    except (urllib.error.URLError, OSError):
-        return False
+    return is_klayoutclaw(MCP_URL)
 
 
 def mcp_call(method, params=None, timeout=30):
@@ -204,7 +197,7 @@ class TestE2ESkillExists:
 # Module-level skipif for all MCP tests in classes marked with @pytest.mark.mcp
 _mcp_skip = pytest.mark.skipif(
     not _mcp_available(),
-    reason="KLayout MCP server not reachable at 127.0.0.1:8765",
+    reason=f"KLayout MCP server not reachable at {MCP_URL}",
 )
 
 

@@ -16,16 +16,109 @@ Contract:
 
 import json
 import os
-import sys
-import urllib.request
 import urllib.error
+import urllib.request
 
 _DEFAULT_URL = "http://127.0.0.1:8765/mcp"
+_DEFAULT_SERVER_CONFIG_PATH = os.path.expanduser("~/.klayout/klayoutclaw.json")
+
+
+def _parse_server_config_bool(value, source):
+    """Parse a JSON/environment boolean used by the local server config."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{source}: 'mcp.tls' must be a boolean")
+
+
+def _normalize_server_endpoint(value, source):
+    """Validate the HTTP path served by KlayoutClaw."""
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValueError(f"{source}: 'mcp.endpoint' must start with '/'")
+    if (
+        not value
+        or any(char.isspace() for char in value)
+        or "?" in value
+        or "#" in value
+    ):
+        raise ValueError(
+            f"{source}: 'mcp.endpoint' must be a path without whitespace, "
+            "query, or fragment"
+        )
+    return value
+
+
+def _url_from_server_config(cfg, source):
+    """Build a client URL from ``~/.klayout/klayoutclaw.json``."""
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{source}: top-level value must be an object")
+    mcp = cfg.get("mcp", cfg)
+    if not isinstance(mcp, dict):
+        raise ValueError(f"{source}: 'mcp' must be an object")
+
+    tls = _parse_server_config_bool(mcp.get("tls", False), source)
+    raw_port = mcp.get("port", 8765)
+    if isinstance(raw_port, bool):
+        raise ValueError(
+            f"{source}: 'mcp.port' must be an integer from 1 to 65535"
+        )
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError) as ex:
+        raise ValueError(
+            f"{source}: 'mcp.port' must be an integer from 1 to 65535"
+        ) from ex
+    if port < 1 or port > 65535:
+        raise ValueError(
+            f"{source}: 'mcp.port' must be an integer from 1 to 65535"
+        )
+
+    endpoint = _normalize_server_endpoint(mcp.get("endpoint", "/mcp"), source)
+    host = mcp.get("bind", "127.0.0.1")
+    if not isinstance(host, str) or not host.strip():
+        raise ValueError(
+            f"{source}: 'mcp.bind' must be a non-empty hostname or address"
+        )
+    host = host.strip()
+    if host in {"0.0.0.0", "::", "*"}:
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    scheme = "https" if tls else "http"
+    return f"{scheme}://{host}:{port}{endpoint}"
+
+
+def _local_server_config_url(environ=None):
+    """Return the local server URL when its per-user config exists."""
+    if environ is None:
+        environ = os.environ
+    path = os.path.expanduser(
+        environ.get("KLAYOUT_MCP_CONFIG", _DEFAULT_SERVER_CONFIG_PATH)
+    )
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as config_file:
+            cfg = json.load(config_file)
+    except json.JSONDecodeError as ex:
+        raise ValueError(f"{path}: invalid JSON: {ex}") from ex
+    return _url_from_server_config(cfg, path)
+
+
 # Seed MCP_URL from the KLAYOUT_MCP_URL env var at import time so every skill
 # script that imports this module picks up the Docker-friendly override even
-# if the caller never explicitly calls load_mcp_config(). If the env var is
-# unset the default host.loopback URL is used, matching legacy behavior.
-MCP_URL = os.environ.get("KLAYOUT_MCP_URL") or _DEFAULT_URL
+# if the caller never explicitly calls load_mcp_config(). The per-user server
+# config is the next fallback so server and bundled skills share one endpoint.
+MCP_URL = (
+    os.environ.get("KLAYOUT_MCP_URL")
+    or _local_server_config_url()
+    or _DEFAULT_URL
+)
 
 # Default HTTP timeout for tool-invoking calls (execute_script, auto_route,
 # evaluate_design). 300s matches the evaluate_design subprocess cap in the
@@ -44,6 +137,7 @@ _session_id = None
 # (agent/src/config.ts defaultConfig().mcp). The client only needs the URL
 # string, not the label, so we resolve generically rather than pinning a name.
 _KLAYOUT_KEY_HINTS = ("klayoutclaw", "klayout", "klayout_mcp")
+_KLAYOUT_ENV_DEFAULT_PREFIX = "${KLAYOUT_MCP_URL:-"
 
 
 def _entry_url(entry):
@@ -52,6 +146,7 @@ def _entry_url(entry):
     Handles two shapes:
     - Direct URL: ``{"url": "http://..."}``
     - stdio via mcp-remote: ``{"command": "npx", "args": ["mcp-remote", "http://...", ...]}``
+      including Claude's ``${KLAYOUT_MCP_URL:-http://...}`` default expansion.
 
     Returns the URL string, or None if not extractable.
     """
@@ -65,6 +160,14 @@ def _entry_url(entry):
     for arg in args:
         if isinstance(arg, str) and arg.startswith("http"):
             return arg
+        if (
+            isinstance(arg, str)
+            and arg.startswith(_KLAYOUT_ENV_DEFAULT_PREFIX)
+            and arg.endswith("}")
+        ):
+            default_url = arg[len(_KLAYOUT_ENV_DEFAULT_PREFIX):-1]
+            if default_url.startswith("http"):
+                return os.environ.get("KLAYOUT_MCP_URL") or default_url
     return None
 
 
@@ -78,8 +181,8 @@ def _extract_mcp_url(cfg, source):
     2. Single-entry ``mcpServers`` block with an unknown label — trusted.
     3. Flat qlaybot ``klayout.json``: ``{"url": "...", ...}``.
 
-    Also falls back to a URL-shape heuristic when multiple entries exist
-    with no known label.
+    Also falls back to a server-label heuristic when multiple entries exist
+    with no exact known label.
 
     Parameters
     ----------
@@ -122,10 +225,12 @@ def _extract_mcp_url(cfg, source):
         if url:
             return url
 
-    # Multi-entry heuristic: any URL that looks like KlayoutClaw.
-    for entry in servers.values():
+    # Multi-entry heuristic: choose a server whose label identifies KLayout.
+    # Do not infer identity from the default port: custom ports are supported,
+    # and 8765 is also AnkiConnect's conventional port.
+    for key, entry in servers.items():
         url = _entry_url(entry)
-        if url and (":8765/mcp" in url or "klayout" in url.lower()):
+        if url and "klayout" in key.lower():
             return url
 
     raise KeyError(
@@ -148,10 +253,11 @@ def load_mcp_config(config_path=None):
          Docker to point at ``http://host.docker.internal:8765/mcp``). If set,
          this bypasses the entire config-file chain.
       1. ``config_path`` (explicit ``--mcp-config`` flag)
-      2. ``.mcp.json`` in current working directory
-      3. ``mcp_config.json`` in the KlayoutClaw project root
-      4. ``klayout.json`` in the workspace or ``~/.qlaybot/config/``
-      5. Default ``http://127.0.0.1:8765/mcp``
+      2. ``~/.klayout/klayoutclaw.json`` (or ``KLAYOUT_MCP_CONFIG``)
+      3. ``.mcp.json`` in current working directory
+      4. ``mcp_config.json`` in the KlayoutClaw project root
+      5. ``klayout.json`` in the workspace or ``~/.qlaybot/config/``
+      6. Default ``http://127.0.0.1:8765/mcp``
 
     Returns the resolved URL and sets the module-level ``MCP_URL``.
     """
@@ -172,7 +278,13 @@ def load_mcp_config(config_path=None):
         MCP_URL = url
         return url
 
-    # Fallback 1: .mcp.json in current working directory
+    # Fallback 2: per-user server config shared with the KLayout macro.
+    local_url = _local_server_config_url()
+    if local_url:
+        MCP_URL = local_url
+        return local_url
+
+    # Fallback 3: .mcp.json in current working directory
     cwd_cfg = os.path.join(os.getcwd(), ".mcp.json")
     if os.path.exists(cwd_cfg):
         with open(cwd_cfg) as f:
@@ -181,7 +293,7 @@ def load_mcp_config(config_path=None):
         MCP_URL = url
         return url
 
-    # Fallback 2: mcp_config.json in project root (two levels up from skills/scripts/)
+    # Fallback 4: mcp_config.json in project root (two levels up from skills/scripts/)
     project_root = os.path.dirname(os.path.dirname(_script_dir()))
     root_cfg = os.path.join(project_root, "mcp_config.json")
     if os.path.exists(root_cfg):
@@ -191,7 +303,7 @@ def load_mcp_config(config_path=None):
         MCP_URL = url
         return url
 
-    # Fallback 3: klayout.json in the workspace or ~/.qlaybot/config
+    # Fallback 5: klayout.json in the workspace or ~/.qlaybot/config
     workspace_cfg = os.path.join(os.getcwd(), "klayout.json")
     qlaybot_root_cfg = os.path.expanduser(
         os.path.join("~/.qlaybot/config", "klayout.json")

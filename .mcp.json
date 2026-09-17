@@ -1,11 +1,12 @@
 {
   "mcpServers": {
     "klayoutclaw": {
-      "command": "npx",
+      "command": "/bin/sh",
       "args": [
-        "mcp-remote",
-        "http://127.0.0.1:8765/mcp",
-        "--allow-http"
+        "-c",
+        "if [ -n \"$KLAYOUT_MCP_URL\" ]; then mcp_url=\"$KLAYOUT_MCP_URL\"; else config_path=\"$KLAYOUT_MCP_CONFIG\"; if [ -z \"$config_path\" ]; then config_path=\"$HOME/.klayout/klayoutclaw.json\"; fi; if [ -f \"$config_path\" ]; then mcp_url=\"$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1], encoding=\"utf-8\")); c=c.get(\"mcp\", c); tls=c.get(\"tls\", False); port=int(c.get(\"port\", 8765)); endpoint=c.get(\"endpoint\", \"/mcp\"); host=c.get(\"bind\", \"127.0.0.1\"); host=\"127.0.0.1\" if host in (\"0.0.0.0\", \"::\", \"*\") else host; host=\"[\"+host+\"]\" if \":\" in host and not host.startswith(\"[\") else host; print((\"https\" if tls else \"http\")+\"://\"+host+\":\"+str(port)+endpoint)' \"$config_path\")\" || exit 1; else mcp_url=\"$1\"; fi; fi; exec npx -y mcp-remote \"$mcp_url\" --allow-http",
+        "klayoutclaw-mcp",
+        "http://127.0.0.1:8765/mcp"
       ]
     }
   }

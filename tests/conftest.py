@@ -9,11 +9,13 @@ import urllib.request
 import numpy as np
 import pytest
 
+from mcp_identity import is_klayoutclaw
+
 # ---------------------------------------------------------------------------
 # Pytest fixtures
 # ---------------------------------------------------------------------------
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 
 @pytest.fixture(scope="session")
@@ -22,6 +24,8 @@ def session_id():
 
     Skips if the KLayout MCP server is not reachable.
     """
+    if not is_klayoutclaw(MCP_URL, timeout=5):
+        pytest.skip(f"KlayoutClaw MCP server not reachable at {MCP_URL}")
     payload = json.dumps({
         "jsonrpc": "2.0",
         "id": 1,

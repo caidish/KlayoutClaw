@@ -16,13 +16,16 @@ Auto-skips when the MCP server is not reachable.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 
 import pytest
 
+from mcp_identity import is_klayoutclaw
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 _FORBIDDEN_VC_NAMES = [
     "vc_init",
@@ -38,23 +41,14 @@ _FORBIDDEN_VC_NAMES = [
 
 
 def _mcp_available() -> bool:
-    try:
-        payload = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "ping"}).encode()
-        req = urllib.request.Request(
-            MCP_URL, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2)
-        return True
-    except (urllib.error.URLError, OSError):
-        return False
+    return is_klayoutclaw(MCP_URL)
 
 
 pytestmark = [
     pytest.mark.mcp,
     pytest.mark.skipif(
         not _mcp_available(),
-        reason="KLayout MCP server not reachable at 127.0.0.1:8765",
+        reason=f"KLayout MCP server not reachable at {MCP_URL}",
     ),
 ]
 
