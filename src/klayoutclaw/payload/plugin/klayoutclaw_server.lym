@@ -1,0 +1,3011 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>KlayoutClaw MCP Server</description>
+ <version>0.6</version>
+ <category>pymacros</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>true</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name/>
+ <menu-path/>
+ <interpreter>python</interpreter>
+ <dsl-interpreter-name/>
+ <text>
+import sys
+import os
+import io
+import tempfile
+
+# KLayout GUI app has no terminal — sys.stdout defaults to ASCII encoding.
+# Reconfigure to UTF-8 so print() won't crash on non-ASCII characters.
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Early log to verify macro execution
+_early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
+with open(_early_log, "a", encoding="utf-8") as _f:
+    _f.write("MACRO STARTED (v0.6 QTcpServer)\n")
+
+try:
+    import pya
+    with open(_early_log, "a", encoding="utf-8") as _f:
+        _f.write("PYA IMPORTED\n")
+except Exception as _e:
+    with open(_early_log, "a", encoding="utf-8") as _f:
+        _f.write("PYA IMPORT FAILED: {}\n".format(_e))
+
+import json
+import re
+import uuid
+import datetime
+import traceback as _tb_mod
+
+with open(_early_log, "a", encoding="utf-8") as _f:
+    _f.write("ALL IMPORTS OK\n")
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+_log_path = os.path.expanduser("~/.klayout/klayoutclaw.log")
+
+
+def _log(msg):
+    ts = datetime.datetime.now().isoformat()
+    line = "[{}] {}".format(ts, msg)
+    try:
+        with open(_log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        print("[KlayoutClaw] " + msg)
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        print("[KlayoutClaw] " + msg.encode('ascii', errors='replace').decode('ascii'))
+    try:
+        if "_klayoutclaw" in sys.modules:
+            cb = sys.modules["_klayoutclaw"]
+            if msg.startswith("ERROR") and getattr(cb, "on_error", None):
+                cb.on_error(msg)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# UI callback slots (shared via sys.modules["_klayoutclaw"])
+# ---------------------------------------------------------------------------
+
+import types as _types
+if "_klayoutclaw" not in sys.modules:
+    _claw_cb = _types.ModuleType("_klayoutclaw")
+    _claw_cb.on_request = None       # fn(method, timestamp, success, error_msg)
+    _claw_cb.on_server_start = None  # fn(port)
+    _claw_cb.on_error = None         # fn(error_msg)
+    _claw_cb.server_port = None      # int, set when server starts
+    _claw_cb.startup_error = None    # str, persisted when startup fails
+    sys.modules["_klayoutclaw"] = _claw_cb
+
+
+def _notify_request(method, success, error_msg=None):
+    """Notify UI of a request (no-op if UI not loaded)."""
+    try:
+        cb = sys.modules.get("_klayoutclaw")
+        if cb and cb.on_request:
+            cb.on_request(method, datetime.datetime.now().strftime("%H:%M:%S"), success, error_msg)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Layout state
+# ---------------------------------------------------------------------------
+
+_layout_view = None
+_layout = None
+_top_cell = None
+_exec_seq = 0
+
+
+def _get_or_create_view():
+    global _layout_view, _layout, _top_cell
+    mw = pya.Application.instance().main_window()
+    if mw is None:
+        raise ValueError("KLayout main window not available")
+    if mw.views() == 0:
+        mw.create_layout(0)
+    _layout_view = mw.current_view()
+    if _layout_view is None:
+        raise ValueError("No layout view available")
+    cv = _layout_view.active_cellview()
+    if cv is None or not cv.is_valid():
+        mw.create_layout(0)
+        _layout_view = mw.current_view()
+        cv = _layout_view.active_cellview()
+    _layout = cv.layout()
+    if _layout.cells() == 0:
+        _top_cell = _layout.create_cell("TOP")
+    else:
+        _top_cell = _layout.top_cell()
+    return _layout_view, _layout, _top_cell
+
+
+def _handles_stale():
+    """Return True if cached _layout/_layout_view/_top_cell are stale."""
+    global _layout_view, _layout, _top_cell
+    if _layout is None or _layout_view is None or _top_cell is None:
+        return True
+    try:
+        # Tab-switch awareness: if the user (or a prior tool) switched
+        # the active view, the cached _layout_view is still alive but
+        # no longer the GUI's current tab. Subsequent tools (route_inspect,
+        # screenshot, evaluate_design ...) would otherwise quietly operate
+        # on the prior tab. Treat that as stale so the next
+        # `_ensure_valid_handles()` re-acquires from `mw.current_view()`.
+        mw = pya.MainWindow.instance()
+        if mw is not None and _layout_view is not mw.current_view():
+            return True
+        # Verify layout is still alive
+        _layout.cells()
+        # Verify the cellview is still valid
+        cv = _layout_view.active_cellview()
+        if cv is None or not cv.is_valid():
+            return True
+        # Verify cached layout matches the current view's layout
+        if cv.layout() is not _layout:
+            return True
+        _top_cell.name
+    except Exception:
+        return True
+    return False
+
+
+def _ensure_valid_handles():
+    """Refresh layout handles if they are stale."""
+    if _handles_stale():
+        _get_or_create_view()
+
+
+# ---------------------------------------------------------------------------
+# execute_script protection: pre/post snapshot + damage recovery
+#
+# `_layout` exposed to user scripts is a direct alias of the active
+# cellview's layout (see `_get_or_create_view`). Destructive ops in user
+# code (`_layout.clear()`, `_layout.assign(...)`, `_layout.read(...)`)
+# leave dangling pya handles inside both the user script (the script's
+# own captures) and the GUI's `cv.cell` pointer. The GUI's next paint
+# dereferences the dangling pointer and segfaults the whole process.
+#
+# These helpers snapshot the live state before exec(), then probe each
+# handle individually after exec(), rebinding any that became invalid
+# and emitting an explicit, agent-visible report (never silent) of what
+# the server repaired and why.
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_layout_state():
+    """Capture identifying tokens for the live layout/view state before
+    execute_script runs, so post-exec damage can be detected and named."""
+    snap = {
+        "had_layout": _layout is not None,
+        "had_view": _layout_view is not None,
+        "pre_cells": None,
+        "top_cell_name": None,
+        "cv_cell_name": None,
+    }
+    if _layout is not None:
+        try:
+            snap["pre_cells"] = _layout.cells()
+        except Exception:
+            snap["pre_cells"] = None
+    if _top_cell is not None:
+        try:
+            snap["top_cell_name"] = _top_cell.name
+        except Exception:
+            snap["top_cell_name"] = None
+    if _layout_view is not None:
+        try:
+            cv = _layout_view.active_cellview()
+            if cv is not None and cv.is_valid() and cv.cell is not None:
+                snap["cv_cell_name"] = cv.cell.name
+        except Exception:
+            snap["cv_cell_name"] = None
+    return snap
+
+
+def _post_exec_revalidate(pre):
+    """Detect destroyed/dangling pya handles after exec() and rebind them
+    to safe values before control returns to Qt's event loop. Returns a
+    list of human-readable dicts -- one per protective action -- so the
+    agent sees exactly what the server changed and why. Never silent.
+    """
+    global _layout, _layout_view, _top_cell
+    actions = []
+
+    # 1. Verify _layout itself is alive.
+    layout_alive = False
+    if _layout is not None:
+        try:
+            _layout.cells()
+            layout_alive = True
+        except Exception:
+            layout_alive = False
+
+    if not layout_alive:
+        old_pre = pre.get("pre_cells")
+        actions.append({
+            "trigger": "_layout reference is invalid after script (None or destroyed). pre_cells={}".format(old_pre),
+            "action": "Re-acquired _layout via _get_or_create_view(); a fresh tab/layout was used if necessary.",
+            "guidance": "Do not None-out or destroy _layout. Use a detached pya.Layout() for scratch work, or cv.layout() for a local read-only handle.",
+        })
+        try:
+            _get_or_create_view()
+        except Exception as _re:
+            actions.append({
+                "trigger": "_layout re-acquisition failed",
+                "action": "No recovery possible; subsequent tools may fail",
+                "error": str(_re),
+            })
+            try:
+                _log("execute_script: layout recovery failed: {}".format(_re))
+            except Exception:
+                pass
+        if actions:
+            try:
+                _log("execute_script: {} protective action(s) applied (layout rebuild)".format(len(actions)))
+            except Exception:
+                pass
+        return actions
+
+    # 2. Detect mass cell destruction (e.g. _layout.clear()).
+    pre_cells = pre.get("pre_cells")
+    try:
+        post_cells = _layout.cells()
+    except Exception:
+        post_cells = None
+    if pre_cells is not None and post_cells == 0 and pre_cells > 0:
+        actions.append({
+            "trigger": "Active layout was emptied during script (cells: {} -&gt; 0). Likely _layout.clear() / .assign() / .read() on the live view layout.".format(pre_cells),
+            "action": "No data recovery is possible. Any pya.Cell, pya.Shapes, or pya.Region handles your script captured before the destructive call are now dangling and will raise 'Object has been destroyed already'.",
+            "guidance": "_layout IS the active cellview's layout, not a scratch buffer. For temporary work use pya.Layout() (detached). To replace the visible layout safely, call create_layout (new tab) instead of clear()+assign().",
+        })
+
+    # 3. Verify _top_cell handle.
+    top_cell_alive = False
+    if _top_cell is not None:
+        try:
+            _ = _top_cell.name
+            top_cell_alive = True
+        except Exception:
+            top_cell_alive = False
+
+    top_cell_was_recreated = False
+    if not top_cell_alive:
+        old_name = pre.get("top_cell_name")
+        try:
+            if _layout.cells() == 0:
+                _top_cell = _layout.create_cell("TOP")
+                top_cell_was_recreated = True
+                actions.append({
+                    "trigger": "_top_cell handle was destroyed and layout is empty (previous top: {!r}).".format(old_name),
+                    "action": "Created a fresh placeholder cell named 'TOP' so the cellview can paint.",
+                    "guidance": "Re-create geometry on this cell, or call create_layout to start a clean tab.",
+                })
+            else:
+                _top_cell = _layout.top_cell()
+                top_cell_was_recreated = True
+                try:
+                    _new_name = _top_cell.name
+                except Exception:
+                    _new_name = "unknown"
+                actions.append({
+                    "trigger": "_top_cell handle was destroyed but layout still contains cells (previous top: {!r}).".format(old_name),
+                    "action": "Rebound _top_cell to current layout.top_cell() = {!r}.".format(_new_name),
+                    "guidance": "If you need a specific cell, retrieve it by name from _layout after destructive operations.",
+                })
+        except Exception as _re:
+            actions.append({
+                "trigger": "_top_cell rebinding failed",
+                "action": "No recovery possible; subsequent tools may fail",
+                "error": str(_re),
+            })
+
+    # 4. Verify the active cellview's `cell` pointer (the GUI-crash hazard).
+    # Logic: a "dangling" cv.cell is one that (a) was a valid named cell at
+    # pre-snapshot time but is no longer reachable via .name, OR (b) we just
+    # recreated _top_cell in step 3 -- because pya's Python `cv.cell` wrapper
+    # may auto-rebind silently while KLayout's C++ cv->cell pointer remains
+    # stale (Qt paints will then dereference garbage and either segfault or
+    # hang the GUI). We therefore force-rebind whenever step 3 fired, not
+    # just when we can prove cv.cell is None/dead.
+    # A cv.cell of None on a freshly-created view (when the snapshot also
+    # had None and step 3 did NOT rebuild _top_cell) is not dangerous and
+    # must not be reported.
+    pre_had_cv_cell = pre.get("cv_cell_name") is not None
+    if _layout_view is not None:
+        try:
+            cv = _layout_view.active_cellview()
+        except Exception:
+            cv = None
+        if cv is not None:
+            try:
+                cv_valid = cv.is_valid()
+            except Exception:
+                cv_valid = False
+            if cv_valid:
+                cv_cell_ok = False
+                try:
+                    if cv.cell is not None:
+                        _ = cv.cell.name
+                        cv_cell_ok = True
+                    else:
+                        # cv.cell is None: only OK if it was None before too.
+                        cv_cell_ok = not pre_had_cv_cell
+                except Exception:
+                    cv_cell_ok = False
+                # Force a rebind whenever we recreated _top_cell, even if
+                # cv.cell looks valid -- the Python wrapper can be auto-rebound
+                # by pya while the underlying C++ cv->cell still points at
+                # destroyed memory, causing Qt to hang on next paint.
+                if top_cell_was_recreated:
+                    cv_cell_ok = False
+                if not cv_cell_ok:
+                    old = pre.get("cv_cell_name")
+                    try:
+                        if _top_cell is not None:
+                            cv.cell = _top_cell
+                        else:
+                            cv.cell = _layout.top_cell()
+                        try:
+                            _new_name = cv.cell.name
+                        except Exception:
+                            _new_name = "unknown"
+                        if top_cell_was_recreated:
+                            _trig = ("Active cellview's cv.cell may reference C++-stale memory "
+                                     "after _top_cell was rebuilt (previous: {!r}). Force-rebinding "
+                                     "preemptively to keep Qt's next paint safe.").format(old)
+                        else:
+                            _trig = ("Active cellview's cv.cell pointer was dangling after script "
+                                     "(previous: {!r}). This is the KLayout GUI segfault trigger.").format(old)
+                        actions.append({
+                            "trigger": _trig,
+                            "action": "Rebound cv.cell to {!r} before returning to Qt's event loop.".format(_new_name),
+                            "guidance": "After _layout.clear() / .assign() / .read() you MUST rebind cv.cell. The server did this for you; consider operating on a detached pya.Layout() and using create_layout to swap views explicitly.",
+                        })
+                    except Exception as _re:
+                        actions.append({
+                            "trigger": "cv.cell rebinding failed",
+                            "action": "Could not rebind cv.cell -- KLayout may crash on next repaint",
+                            "error": str(_re),
+                        })
+
+    # Mirror a one-line summary into the KLayout log so users with the
+    # console open see protection events without parsing the JSON.
+    if actions:
+        try:
+            _log("execute_script: {} protective action(s) applied".format(len(actions)))
+            for _a in actions:
+                _log("  - {}".format(_a.get("trigger", "?")))
+        except Exception:
+            pass
+
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+_session_id = None
+
+
+def _ensure_session():
+    global _session_id
+    if _session_id is None:
+        _session_id = str(uuid.uuid4())
+    return _session_id
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "name": "ping",
+        "description": "Cheap liveness probe. Returns {status, ts, busy, busy_tool, pid} without touching the layout. Use it to distinguish a wedged MCP bridge (e.g. one returning a stale/fixed response) from a slow-but-alive tool call — if a tool seems stuck or you get a suspicious repeated/garbled result, call ping: a healthy server replies instantly with status=ok and whether a tool is in flight.",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "create_layout",
+        "description": "Create a new layout with a top cell. Returns the cell name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Top cell name", "default": "TOP"},
+                "dbu": {"type": "number", "description": "Database unit in microns", "default": 0.001}
+            }
+        }
+    },
+    {
+        "name": "execute_script",
+        "description": "Execute arbitrary Python/pya code in KLayout. The namespace includes: pya, json, os, _layout, _layout_view, _top_cell, _get_or_create_view() (returns tuple: _layout_view, _layout, _top_cell), _refresh_view(). Set the variable 'result' to return data (will be serialized as JSON). The view is refreshed automatically after execution.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code to execute"}
+            },
+            "required": ["code"]
+        }
+    },
+    {
+        "name": "save_layout",
+        "description": "Save the current layout to a file. Format: GDS2 or OASIS.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filepath": {"type": "string", "description": "Output file path"},
+                "format": {"type": "string", "description": "File format (GDS2 or OASIS)", "default": "GDS2"}
+            },
+            "required": ["filepath"]
+        }
+    },
+    {
+        "name": "get_layout_info",
+        "description": "Get summary information about the current layout.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "screenshot",
+        "description": "Capture the current KLayout viewport as a PNG image. Returns exactly what the user sees, including layer colors, zoom level, and visibility settings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filepath": {"type": "string", "description": "Output PNG file path", "default": "/tmp/klayoutclaw_screenshot.png"},
+                "width": {"type": "integer", "description": "Image width in pixels", "default": 1024},
+                "height": {"type": "integer", "description": "Image height in pixels", "default": 768},
+                "zoom_box": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "Optional viewport box [x1, y1, x2, y2]. UNIT: um (micrometers, layout coordinates — NOT dbu). If provided, calls layout_view.zoom_box(pya.DBox(x1,y1,x2,y2)) before saving the screenshot."
+                }
+            }
+        }
+    },
+    {
+        "name": "auto_route",
+        "description": "Route pin pairs between pin_layer_a and pin_layer_b using ordered-loop assignment plus sequential cost-based pathfinding. Inserts routed paths on output_layer. Returns status, routed_pairs, errors, map_resolution_um_used, and next_step_suggestion. Requires numpy/scikit-image/klayout in the conda env (default 'instrMCPdev').",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pin_layer_a": {"type": "string", "description": "REQUIRED. Layer spec of start pins (e.g. '102/0' or '21/0')."},
+                "pin_layer_b": {"type": "string", "description": "REQUIRED. Layer spec of end pins (e.g. '111/0' or '2/0')."},
+                "obstacle_layers": {"type": "array", "items": {"type": "string"}, "description": "Global obstacle layers routes must avoid (applies to every pair). Example: ['20/0', '21/0', '22/0']. Default [].", "default": []},
+                "output_layer": {"type": "string", "description": "Layer spec for the routed path shapes. Default '10/0'.", "default": "10/0"},
+                "path_width": {"type": "number", "description": "Path width in um. Default 10.", "default": 10.0},
+                "obs_safe_distance": {"type": "number", "description": "Minimum distance from obstacles in um. Default 5.", "default": 5.0},
+                "path_safe_distance": {"type": "number", "description": "Minimum distance between routed paths in um. Default 5.", "default": 5.0},
+                "map_resolution": {"type": "number", "description": "Routing grid resolution in um. Smaller = finer but slower. Ignored if auto_map_resolution=true. Default 2.", "default": 2.0},
+                "auto_map_resolution": {"type": "boolean", "description": "Override map_resolution by deriving from the smallest pin bbox edge across both pin layers (target: min_edge_um / 3, clamped to [0.2, 5.0]). Use on layouts with small contacts (~3x2 um) where the default 2.0 under-resolves. Default false.", "default": False},
+                "dry_run": {"type": "boolean", "description": "Preview the ordered-loop assignment without committing routes. Returns status='dry_run' and a pairs[] array of assignments + distances so you can inspect the topology before paying the pathfinding cost. Default false.", "default": False},
+                "per_pair_obstacle_layers": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "Optional per-pair extra obstacle layers, unioned with obstacle_layers for that pair only. Length MUST equal len(pairs) after the assignment pre-pass — call with dry_run=true first to see the pair order. Example: [['13/0'], [], []] avoids graphite for pair 0, nothing extra for pairs 1-2."},
+                "pin_pairs_override": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2,
+                        "maxItems": 2
+                    },
+                    "description": "Explicit [a_idx, b_idx] pairs overriding the default ordered-loop assignment. Length MUST equal min(n_pin_a, n_pin_b). Call with dry_run=true first to see the shape-iteration order. Use when the default assignment is not the desired device-level topology. If omitted, ordered-loop assignment + optional sort_pairs is used."
+                },
+                "conda_env": {"type": "string", "description": "Conda env with numpy+scikit-image+klayout. Default 'instrMCPdev'.", "default": "instrMCPdev"},
+                "python_path": {"type": "string", "description": "Explicit python binary path (overrides conda_env)."},
+                "obs_hardness": {"type": "number", "description": "Max cost at obstacle boundary (higher = paths stay further away). Default 20.", "default": 20.0},
+                "pin_safe_distance_a": {"type": "number", "description": "Avoidance halo around Pin A shapes in um. Default 5.", "default": 5.0},
+                "pin_safe_distance_b": {"type": "number", "description": "Avoidance halo around Pin B shapes in um. Default 5.", "default": 5.0},
+                "path_hardness": {"type": "number", "description": "Max cost near previously routed paths (higher = more spacing). Default 10.", "default": 10.0},
+                "sort_pairs": {"type": "boolean", "description": "Route assigned pairs/nets by distance after assignment; default ordering is shortest first. Default true.", "default": True},
+                "timeout": {"type": "number", "default": 120, "minimum": 10, "maximum": 600, "description": "Subprocess timeout in seconds. Clamped to [10, 600]. Default 120."},
+                "obs_damping_step": {"type": "number", "default": 4, "description": "Obstacle cost damping steps. Lower = stronger avoidance. Default 4."},
+                "rescue_unrouted_nets": {"type": "boolean", "default": True, "description": "Dense-fan-out rescue. When a net fails 'No path found' (typically the last route in a tight 8+ contact bundle, walled in by sibling pins + prior routes' clearance halos), retry it with a local-then-global relaxation that opens the blocking halo + pin-marker cells while keeping every already-routed path cell HARD, so the rescued lead reaches its pad WITHOUT crossing any prior route. The response reports rescued_nets and rescue_note. Strict no-op on layouts that already route fully. Default true; set false for legacy fail-fast behaviour."},
+                "two_level": {"type": "string", "enum": ["auto", "on", "off"], "default": "auto", "description": "Adaptive two-level (inner-fine / outer-coarse) routing for real nanodevices where inner contacts cluster at the centre and bonding pads sit on the perimeter (so the two pin groups span the whole layout and a single fine grid OOMs). 'auto' (default) auto-detects that topology (smaller-bbox pin group = sample) and, only when a single fine grid over the full field would exceed the cell cap, routes in two passes joined by boundary patches — otherwise single-pass. 'on' forces it; 'off' disables it. Response carries two_level, inner_grid, outer_grid, patches, boundary_points_um."},
+                "inner_width": {"type": "number", "description": "Two-level inner (sample-region) route width in um. Default = path_width."},
+                "outer_width": {"type": "number", "description": "Two-level outer (perimeter) route width in um. Default = path_width."},
+                "patch_size": {"type": "number", "description": "Two-level boundary connection patch size in um. Auto-sized to bridge the inner/outer grid snap + widths if omitted."},
+                "inner_margin": {"type": "number", "description": "Two-level inner-window margin in um around the sample contacts. Default auto (max of 2x contact pitch, 15% of inner span)."}
+            },
+            "required": ["pin_layer_a", "pin_layer_b"]
+        }
+    },
+    {
+        "name": "validate_pixel_size",
+        "description": "Validate a microscope pixel size value and optionally compute marker spacing from a GDS template. Returns validity, likely objective mapping, warnings, and marker spacing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pixel_size": {"type": "number", "description": "Pixel size in microns per pixel"},
+                "template_gds": {"type": "string", "description": "Optional path to a GDS file with L5/0 alignment markers"},
+                "image_path": {"type": "string", "description": "Optional path to a microscope image for reference"}
+            },
+            "required": ["pixel_size"]
+        }
+    },
+    {
+        "name": "evaluate_design",
+        "description": "Run a nanodevice-oriented DRC + metric evaluation against a caller-supplied geometric checklist. Returns weighted overall score (0-1), per-check scores, DRC-like diagnostic fields (e.g. crossing_pairs for contact_isolation), and a next_step_suggestion string pointing the agent at the inspection tools relevant to any failing check.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "checks": {
+                    "type": "array",
+                    "description": "List of check objects; each has {name, args, weight}. weight \u2208 [0, 1] and all weights should sum to ~1.0 (re-normalised internally).",
+                    "items": {
+                        "type": "object",
+                        "description": "Available primitives (`name` field):\n\n- component_overlap {component, region, region_op?} \u2014 fraction of component area overlapping region. region is a layer_map key or list of keys; region_op \u2208 {union (default), intersection, difference}.\n- component_containment {component, region, region_op?} \u2014 fraction of component area inside region. Same region semantics as overlap.\n- bulk_containment {component, bulk_region?, materials?, region_op?, core_bbox?} \u2014 fraction of component area inside a caller-declared bulk region. Use instead of component_containment when the component has a core body plus peripherals that intentionally extend beyond the target region (component_containment would penalise that, bulk_containment does not). Pass EITHER bulk_region (single layer_map key or list, combined via region_op) OR materials (list of layer_map keys whose intersection defines the bulk). No default material names are assumed. Optional core_bbox=[x1,y1,x2,y2] in um clips the component to a rectangular core first.\n- arm_material_class {component, classes, containment_threshold?} \u2014 fraction of component shapes that fall entirely inside EXACTLY ONE class. Each entry in `classes` may be: a layer_map key (\"graphene\"), a list of keys ([\"graphene\", \"graphite\"], unioned), or a dict {name?, region, region_op?}. A shape belongs to a class if \u2265 containment_threshold (default 0.9) of its area lies inside that class's region. Scores 0 for shapes that are ambiguous or land in zero classes.\n- material_overlap_report {materials} \u2014 compute pairwise and multi-way intersections of the listed material layers. Score is always 1.0; the value lives in the `report` side-data field: {\"&lt;key&gt;_only\": {area_um2, bbox_um, centroid_um, num_polygons}, \"&lt;A&gt;_and_&lt;B&gt;\": {...}, ...}. Use to replace the standard hand-rolled Region intersection code that every design session ends up writing.\n- contact_isolation {component?} \u2014 junction-aware route-crossing check with steep penalty. Default component \"contact_route\". Response promotes crossing_pairs=[[i,j,area_um2], ...] to the check result.\n- route_material_compat {route_component?, contact_component?, graphene?, graphite?, tolerance_area?, attach_buffer?} \u2014 each ohmic route must stay off the OPPOSING flake material (a graphene_only contact's route crossing graphite, or vice-versa, is an electrical short). Steep penalty: 0 violators \u2192 1.0, else 0.5^v \u00d7 passing/expected_arms. Defaults: contact_route, contact_patch, graphene, graphite, tolerance_area 0.5 um2, attach_buffer 0.5 um. Response promotes violating_routes=[{route_id, contact_kind, crossed_material, area_um2}, ...] to the check result so the agent can re-route the shorting leads.\n- connectivity {contact_component?, pad_component?, route_component?, tolerance?} \u2014 fraction of contacts reaching a pad via routes. Defaults: contact_patch, bonding_pad, contact_route, 15.0.\n- route_endpoints {route_component?, target_components?, tolerance?} \u2014 fraction of route endpoints on valid targets. Defaults: contact_route, [contact_patch, mesa, bonding_pad], 15.0.\n- adjacency {component_a, component_b, tolerance?} \u2014 fraction of component_a shapes near component_b (default tolerance 2.0).\n- solidity {component, threshold?, direction?} \u2014 shape solidity score vs threshold (default 0.5, below).\n- spacing {component_a, component_b?, min_distance?} \u2014 fraction of shape pairs meeting min distance (default: same component, 1.0).\n\nAll component / region / target_components values are keys in layer_map.",
+                        "properties": {
+                            "name": {"type": "string", "description": "Primitive name \u2014 see the description above for the full registry."},
+                            "args": {"type": "object", "description": "Primitive-specific arguments. Required keys vary by primitive (see description)."},
+                            "weight": {"type": "number", "description": "Relative weight in [0, 1]."}
+                        },
+                        "required": ["name", "args", "weight"]
+                    }
+                },
+                "layer_map": {
+                    "type": "object",
+                    "description": "Map of component name \u2192 layer spec. Accepted value shapes:\n  [20, 0]                         \u2014 single (layer, datatype) pair\n  {\"layer\": 20, \"datatype\": 0}    \u2014 dict form\n  [[20, 0], [3, 0]]                \u2014 list of pairs for multi-layer components\n  [{\"layer\": 3, \"datatype\": 0}, {\"layer\": 4, \"datatype\": 0}] \u2014 list of dicts\n\nKeys here are the ONLY names check args can reference. Unknown keys inside primitive args are silently ignored; missing layers score the check 0.0 (no crash).\n\nExample (illustrative — consult the benchmark instruction for the actual keys + layer numbers):\n  {\"device_body\": [L, D], \"peripheral\": [L, D], \"connector\": [L, D], \"pad\": [L, D]}\n\nReplace L / D with the layer / datatype integers your benchmark specifies.",
+                    "additionalProperties": {}
+                },
+                "reference_gds": {"type": "string", "description": "Optional path to a reference GDS \u2014 only needed when a region references a layer that lives in the reference file rather than the current layout."},
+                "timeout": {"type": "number", "default": 300, "minimum": 60, "maximum": 900, "description": "Subprocess timeout in seconds (default 300, max 900). Raise this for layouts with hundreds of shapes."},
+                "python_path": {"type": "string", "description": "Path to python binary with gdstk/shapely/numpy (overrides conda_env)."},
+                "conda_env": {"type": "string", "default": "instrMCPdev", "description": "Conda environment name that has gdstk+shapely+numpy installed."}
+            },
+            "required": ["checks", "layer_map"]
+        }
+    },
+    {
+        "name": "route_inspect",
+        "description": "Inspect every route on a given layer and report (route_id, from_contact, to_pad, length_um, layer, endpoints_um) plus any pair crossings. route_id matches the indexing used by evaluate_design's contact_isolation.crossing_pairs so the two tools can be cross-referenced. When crossings are detected, also renders a labeled PNG of the crossing region (zoom_box around all crossing geometries with 10x line-width clearance, route_id printed near both endpoints of each crossing-involved route); the path is returned in the 'image_path' field. Read-only \u2014 never modifies the layout.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "route_layer": {"type": "string", "description": "Layer spec of the routes to inspect (e.g. '3/0')."},
+                "contact_layers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Layer specs for contact shapes that route endpoints may land on. Accepts a list of layer specs. Required — there is no default."
+                },
+                "pad_layer": {"type": "string", "description": "Layer spec for bonding pads. Required — there is no default."},
+                "tolerance_um": {"type": "number", "description": "Endpoint-to-shape matching tolerance in microns (default 15.0, matching evaluate_design connectivity/route_endpoints so the two tools agree on reachability).", "default": 15.0},
+                "image_path": {"type": "string", "description": "Optional output PNG path for the labeled-crossings image. Defaults to /tmp/route_inspect_&lt;ts&gt;.png. Only written when crossings are detected; with no crossings the response field 'image_path' is null."}
+            },
+            "required": ["route_layer", "contact_layers", "pad_layer"]
+        }
+    },
+    {
+        "name": "close_layout_view",
+        "description": "Close one or more KLayout layout tabs to keep the MCP server healthy. Layout tabs accumulate memory over a long session and can eventually stall the server. Call this tool to organize KLayout tabs AFTER a task is finished — for example, to clean up intermediate template/import tabs before moving on, or to drop everything except the current working layout. Never touches tabs the user opened manually vs. tabs the MCP server created — it just closes whatever you tell it to by index or mode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "Optional 0-based view index to close. If omitted, behavior depends on 'mode'."},
+                "mode": {"type": "string", "enum": ["current", "others", "all"], "default": "others", "description": "Close strategy when 'index' is omitted: 'current' closes only the active tab; 'others' closes every tab except the active one (default — typical end-of-task cleanup); 'all' closes every open tab."}
+            }
+        }
+    },
+    # NOTE: vc_* tools (vc_init, vc_checkpoint, vc_history, vc_checkout,
+    # vc_diff, vc_branch, vc_tag, vc_export, vc_status) intentionally
+    # de-advertised here per issue #25 (review session 2026-05-05). The
+    # corresponding _TOOL_DISPATCH entries are also stripped; the handler
+    # functions remain defined below in case this off-switch is reverted.
+]
+
+
+# ---------------------------------------------------------------------------
+# View refresh helper
+# ---------------------------------------------------------------------------
+
+_LAYER_STYLES = {
+    # (layer, datatype): (fill_color, frame_color, transparent)
+    # Colors as 0xRRGGBB integers
+    (1, 0): (0x4169E1, 0x1A3A8A, False),   # Mesa: royal blue, solid
+    (2, 0): (0xFF8C00, 0xB35F00, True),     # Metal: dark orange, transparent
+    (3, 0): (0xFFD700, 0xB39700, False),    # Pads: gold, solid
+    (4, 0): (0x32CD32, 0x1E7A1E, True),     # green, transparent
+    (5, 0): (0xDC143C, 0x8B0A25, False),    # crimson, solid
+    (6, 0): (0x8A2BE2, 0x5A1D96, True),     # violet, transparent
+}
+
+_FALLBACK_COLORS = [
+    0x17BECF, 0xE377C2, 0x7F7F7F, 0xBCBD22,
+    0x8C564B, 0x9467BD, 0xD62728, 0x2CA02C,
+]
+
+
+def _refresh_view():
+    """Update KLayout's GUI to show current layout state with per-layer styling."""
+    global _layout_view, _layout
+    if _layout_view is None or _layout is None:
+        return
+    fallback_idx = 0
+    layers_added = False
+    for li in _layout.layer_indices():
+        info = _layout.get_info(li)
+        key = (info.layer, info.datatype)
+        # Check if this layer already has a layer properties entry
+        found = False
+        lp_iter = _layout_view.begin_layers()
+        while not lp_iter.at_end():
+            lp = lp_iter.current()
+            if lp.source_layer == info.layer and lp.source_datatype == info.datatype:
+                found = True
+                break
+            lp_iter.next()
+        if not found:
+            lp = pya.LayerProperties()
+            lp.source_layer = info.layer
+            lp.source_datatype = info.datatype
+            style = _LAYER_STYLES.get(key)
+            if style:
+                lp.fill_color = style[0]
+                lp.frame_color = style[1]
+                lp.transparent = style[2]
+            else:
+                c = _FALLBACK_COLORS[fallback_idx % len(_FALLBACK_COLORS)]
+                lp.fill_color = c
+                lp.frame_color = c
+                lp.transparent = True
+                fallback_idx += 1
+            _layout_view.insert_layer(lp_iter, lp)
+            layers_added = True
+    if layers_added:
+        _layout_view.zoom_fit()
+
+
+# ---------------------------------------------------------------------------
+# Tool handlers — all run on Qt main thread (no dispatch needed)
+# ---------------------------------------------------------------------------
+
+def _tool_create_layout(args):
+    global _layout_view, _layout, _top_cell
+    name = args.get("name", "TOP")
+    dbu = args.get("dbu", 0.001)
+    mw = pya.Application.instance().main_window()
+    # mw.create_layout(1) opens a new tab/panel with a fresh empty layout
+    # and auto-switches mw.current_view() to it, while leaving any existing
+    # tabs (with their cells, polygons, and image annotations) intact.
+    # Mode 0 instead *replaces* the current view's layout in-place, which
+    # wipes the user's existing work and also inherits the previous view's
+    # pya.Image annotations. Mode 1 gives the natural "new blank layout"
+    # behaviour you'd expect.
+    mw.create_layout(1)
+    _layout_view = mw.current_view()
+    cv = _layout_view.active_cellview()
+    _layout = cv.layout()
+    _layout.dbu = dbu
+    _top_cell = _layout.create_cell(name)
+    _layout_view.active_cellview().cell = _top_cell
+    _refresh_view()
+    return json.dumps({"status": "ok", "top_cell": _top_cell.name, "dbu": dbu})
+
+
+def _tool_execute_script(args):
+    global _layout, _layout_view, _top_cell, _exec_seq
+    _ensure_valid_handles()
+    code = args.get("code")
+    if not code:
+        raise ValueError("Missing required parameter: code")
+    # Auto-save code block to /tmp/KLayout_Execute/ (best-effort, never blocks execution)
+    _exec_seq += 1
+    try:
+        _save_dir = "/tmp/KLayout_Execute"
+        os.makedirs(_save_dir, exist_ok=True)
+        _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        _save_name = "{}_{:04d}.py".format(_ts, _exec_seq)
+        _save_path = os.path.join(_save_dir, _save_name)
+        with open(_save_path, "w", encoding="utf-8") as _sf:
+            _sf.write("# KlayoutClaw execute_script auto-save\n# timestamp: {}\n# sequence: {}\n\n".format(_ts, _exec_seq) + code)
+    except Exception:
+        pass  # auto-save is best-effort
+    ns = {
+        "pya": pya,
+        "json": json,
+        "os": os,
+        "_layout": _layout,
+        "_layout_view": _layout_view,
+        "_top_cell": _top_cell,
+        "_get_or_create_view": _get_or_create_view,
+        "_refresh_view": _refresh_view,
+    }
+    # Snapshot live layout/view state so post-exec damage is detectable.
+    _pre_state = _snapshot_layout_state()
+    # Capture stdout/stderr during execution
+    _captured_stdout = io.StringIO()
+    _captured_stderr = io.StringIO()
+    _old_stdout = sys.stdout
+    _old_stderr = sys.stderr
+    sys.stdout = _captured_stdout
+    sys.stderr = _captured_stderr
+    _exec_error = None
+    try:
+        exec(code, ns)
+    except Exception as e:
+        _exec_error = e
+    finally:
+        sys.stdout = _old_stdout
+        sys.stderr = _old_stderr
+    _stdout_val = _captured_stdout.getvalue()
+    _stderr_val = _captured_stderr.getvalue()
+    # Update globals in case script called _get_or_create_view() or
+    # reassigned them. Must happen before revalidation so we probe the
+    # freshest references.
+    if ns.get("_layout") is not _layout:
+        _layout = ns["_layout"]
+    if ns.get("_layout_view") is not _layout_view:
+        _layout_view = ns["_layout_view"]
+    if ns.get("_top_cell") is not _top_cell:
+        _top_cell = ns["_top_cell"]
+    # Post-exec damage detection + auto-recovery. MUST run before control
+    # returns to Qt's event loop, otherwise a destroyed cv.cell left over
+    # from the script will segfault the GUI on its next repaint. Runs
+    # whether or not the script raised. Never silent: every action goes
+    # back to the agent in `protections_applied` (or the error message).
+    _protections = _post_exec_revalidate(_pre_state)
+    if _exec_error is not None:
+        _e = _exec_error
+        # Filter traceback to show only the &lt;string&gt; (user code) frames
+        user_frames = []
+        for line in _tb_mod.format_tb(_e.__traceback__):
+            if '&lt;string&gt;' in line:
+                user_frames.append(line.strip())
+        err_msg = "{}: {}".format(type(_e).__name__, _e)
+        if user_frames:
+            err_msg += "\n  in user code:\n    " + "\n    ".join(user_frames)
+        if _stdout_val:
+            err_msg += "\n  stdout: " + _stdout_val.rstrip()
+        if _stderr_val:
+            err_msg += "\n  stderr: " + _stderr_val.rstrip()
+        if _protections:
+            err_msg += "\n  protections_applied (server auto-recovery to keep KLayout alive):"
+            for _act in _protections:
+                err_msg += "\n    - " + json.dumps(_act, sort_keys=True)
+        raise RuntimeError(err_msg)
+    try:
+        _refresh_view()
+    except Exception as _re:
+        _protections.append({
+            "trigger": "_refresh_view raised after script",
+            "action": "Suppressed to preserve response; layer panel may be stale",
+            "error": str(_re),
+        })
+    result = ns.get("result", {"status": "ok"})
+    if not isinstance(result, dict):
+        result = {"status": "ok", "result": result}
+    result["stdout"] = _stdout_val
+    result["stderr"] = _stderr_val
+    if _protections:
+        result["protections_applied"] = _protections
+        # Surface the protection marker even when the user's script didn't
+        # set a status key. Preserve any non-default status the script chose.
+        if result.get("status") in (None, "ok"):
+            result["status"] = "ok_with_protections"
+    return json.dumps(result)
+
+
+def _tool_save_layout(args):
+    global _layout
+    _ensure_valid_handles()
+    filepath = args.get("filepath")
+    fmt = args.get("format", "GDS2")
+    if not filepath:
+        raise ValueError("Missing required parameter: filepath")
+    abs_path = os.path.abspath(filepath)
+    save_opts = pya.SaveLayoutOptions()
+    if fmt.upper() == "OASIS":
+        save_opts.format = "OASIS"
+    else:
+        save_opts.format = "GDS2"
+    # Atomic write: write to a temp file in the SAME directory, then os.replace
+    # (an atomic rename within a filesystem). A verifier or any other reader
+    # never observes a half-written GDS — this closes the save/score race where
+    # a verifier fired mid-write and scored a truncated/missing artifact (QH12).
+    tmp_path = abs_path + ".tmp"
+    try:
+        _layout.write(tmp_path, save_opts)
+        os.replace(tmp_path, abs_path)
+    except Exception:
+        # Don't leave a half-written .tmp orphan on failure.
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+    # DM-4: if a memory-mode VC handle exists for this layout, migrate it
+    # to disk now that we have a concrete .gds path.  Best-effort: any
+    # failure is logged but does not fail the save itself.
+    try:
+        _vc_ensure_handlers_importable()
+        import tools.vc_mcp_handlers as _vch
+        _vch.migrate_on_save(_layout, abs_path)
+    except Exception as _e:
+        _log("save_layout: VC migrate_on_save skipped: {}".format(_e))
+    return json.dumps({"status": "ok", "filepath": abs_path, "format": fmt})
+
+
+def _tool_get_layout_info(args):
+    global _layout, _top_cell
+    _ensure_valid_handles()
+    cells = []
+    # Use each_cell() instead of range(layout.cells()) because the cell
+    # count can include holes in the index space after Layout.read() merges
+    # GDS content with cell-name collisions (KLayout leaves orphaned slots).
+    cell_bboxes = {}
+    for c in _layout.each_cell():
+        cells.append(c.name)
+        try:
+            bb = c.bbox()
+            if not bb.empty():
+                cell_bboxes[c.name] = {
+                    "bbox_dbu": [bb.left, bb.bottom, bb.right, bb.top],
+                    "bbox_um": [
+                        round(bb.left * _layout.dbu, 6),
+                        round(bb.bottom * _layout.dbu, 6),
+                        round(bb.right * _layout.dbu, 6),
+                        round(bb.top * _layout.dbu, 6),
+                    ],
+                    "bbox_units": "dbu and um (see bbox_dbu and bbox_um)",
+                }
+        except Exception:
+            pass
+    dbu = _layout.dbu
+    layers = {}
+    for li in _layout.layer_indices():
+        info = _layout.get_info(li)
+        layer_spec = "{}/{}".format(info.layer, info.datatype)
+        shape_count = 0
+        region = pya.Region()
+        # Use RecursiveShapeIterator for recursive shape collection across all cells
+        rsi = _top_cell.begin_shapes_rec(li)
+        while not rsi.at_end():
+            shape_count += 1
+            s = rsi.shape()
+            if not s.is_text():
+                region.insert(s.polygon)
+            rsi.next()
+        area_um2 = round(region.area() * dbu * dbu, 6)
+        bbox_um = None
+        bbox_dbu = None
+        if not region.is_empty():
+            bb = region.bbox()
+            bbox_dbu = [bb.left, bb.bottom, bb.right, bb.top]
+            bbox_um = [
+                round(bb.left * dbu, 6),
+                round(bb.bottom * dbu, 6),
+                round(bb.right * dbu, 6),
+                round(bb.top * dbu, 6),
+            ]
+        layers[layer_spec] = {
+            "shapes": shape_count,
+            "area_um2": area_um2,
+            "bbox_um": bbox_um,
+            "bbox_dbu": bbox_dbu,
+            "bbox_units": "bbox_um is micrometers, bbox_dbu is database units",
+        }
+    num_layers = len(layers)
+    return json.dumps({
+        "status": "ok",
+        "dbu": dbu,
+        "dbu_um": dbu,  # micrometers per database unit (same as dbu; explicit label for clarity)
+        "units": "All *_um fields are micrometers; *_dbu fields are database units. dbu_um converts dbu->um.",
+        "num_cells": len(cells),
+        "cells": cells,
+        "cell_bboxes": cell_bboxes,
+        "num_layers": num_layers,
+        "layers": layers,
+    })
+
+
+def _tool_screenshot(args):
+    """Capture the current KLayout viewport as a PNG image."""
+    global _layout_view
+    _ensure_valid_handles()
+    if _layout_view is None:
+        raise ValueError("No layout view available to capture")
+
+    filepath = args.get("filepath", "/tmp/klayoutclaw_screenshot.png")
+    width = args.get("width", 1024)
+    height = args.get("height", 768)
+    zoom_box = args.get("zoom_box", None)
+    abs_path = os.path.abspath(filepath)
+
+    if zoom_box is not None:
+        if not isinstance(zoom_box, (list, tuple)) or len(zoom_box) != 4:
+            raise ValueError("zoom_box must be a 4-element list [x1, y1, x2, y2] in micrometers")
+        try:
+            x1, y1, x2, y2 = [float(v) for v in zoom_box]
+        except (TypeError, ValueError) as e:
+            raise ValueError("zoom_box values must be numeric: {}".format(e))
+        _layout_view.zoom_box(pya.DBox(x1, y1, x2, y2))
+        _log("screenshot: zoom_box set to [{}, {}, {}, {}]".format(x1, y1, x2, y2))
+
+    _layout_view.save_image(abs_path, width, height)
+    _log("screenshot: saved {}x{} to {}".format(width, height, abs_path))
+    return json.dumps({"status": "ok", "filepath": abs_path, "width": width, "height": height})
+
+
+def _tool_auto_route(args):
+    """Route connections between pin pairs using external route_worker.py."""
+    import tempfile
+    import subprocess
+
+    global _layout, _layout_view, _top_cell
+    _ensure_valid_handles()
+
+    pin_layer_a = args.get("pin_layer_a")
+    pin_layer_b = args.get("pin_layer_b")
+    if not pin_layer_a or not pin_layer_b:
+        raise ValueError("Missing required parameters: pin_layer_a and pin_layer_b. Both must be layer specs like '102/0'.")
+
+    obstacle_layers = args.get("obstacle_layers", [])
+    output_layer = args.get("output_layer", "10/0")
+    path_width = args.get("path_width", 10.0)
+    obs_safe_distance = args.get("obs_safe_distance", 5.0)
+    path_safe_distance = args.get("path_safe_distance", 5.0)
+    map_resolution = args.get("map_resolution", 2.0)
+    conda_env = args.get("conda_env", "instrMCPdev")
+    python_path = args.get("python_path", None)
+    obs_hardness = args.get("obs_hardness", 20.0)
+    pin_safe_distance_a = args.get("pin_safe_distance_a", 5.0)
+    pin_safe_distance_b = args.get("pin_safe_distance_b", 5.0)
+    path_hardness = args.get("path_hardness", 10.0)
+    sort_pairs = args.get("sort_pairs", True)
+    # Clamp timeout to [10, 600] seconds
+    try:
+        timeout_sec = float(args.get("timeout", 120))
+    except (TypeError, ValueError):
+        timeout_sec = 120.0
+    if timeout_sec &lt; 10:
+        timeout_sec = 10.0
+    elif timeout_sec &gt; 600:
+        timeout_sec = 600.0
+    try:
+        obs_damping_step = int(args.get("obs_damping_step", 4))
+    except (TypeError, ValueError):
+        obs_damping_step = 4
+
+    # P4 additions
+    dry_run = bool(args.get("dry_run", False))
+    auto_map_resolution = bool(args.get("auto_map_resolution", False))
+    per_pair_obstacle_layers = args.get("per_pair_obstacle_layers", None)
+    if per_pair_obstacle_layers is not None and not isinstance(per_pair_obstacle_layers, list):
+        raise ValueError("per_pair_obstacle_layers must be a list of lists of layer spec strings (or null/omitted).")
+    pin_pairs_override = args.get("pin_pairs_override", None)
+    if pin_pairs_override is not None and not isinstance(pin_pairs_override, list):
+        raise ValueError("pin_pairs_override must be a list of [a_idx, b_idx] pairs (or omitted).")
+    rescue_unrouted_nets = bool(args.get("rescue_unrouted_nets", True))
+    two_level = args.get("two_level", "auto")
+    if two_level not in ("auto", "on", "off"):
+        raise ValueError("two_level must be 'auto', 'on', or 'off'.")
+    inner_width = args.get("inner_width", None)
+    outer_width = args.get("outer_width", None)
+    patch_size = args.get("patch_size", None)
+    inner_margin = args.get("inner_margin", None)
+
+    # Save current layout to temp GDS
+    tmp_dir = tempfile.mkdtemp(prefix="klayoutclaw_route_")
+    input_gds = os.path.join(tmp_dir, "input.gds")
+    config_json = os.path.join(tmp_dir, "config.json")
+    output_json = os.path.join(tmp_dir, "output.json")
+
+    save_opts = pya.SaveLayoutOptions()
+    save_opts.format = "GDS2"
+    _layout.write(input_gds, save_opts)
+    _log("auto_route: saved layout to {}".format(input_gds))
+
+    # Write config JSON (field names must match route_worker.py expectations)
+    config = {
+        "gds_path": input_gds,
+        "output_path": output_json,
+        "cell_name": _top_cell.name if _top_cell else "TOP",
+        "dbu": _layout.dbu,
+        "pin_layer_a": pin_layer_a,
+        "pin_layer_b": pin_layer_b,
+        "obstacle_layers": obstacle_layers,
+        "output_layer": output_layer,
+        "path_width_um": path_width,
+        "obs_safe_distance_um": obs_safe_distance,
+        "path_safe_distance_um": path_safe_distance,
+        "map_resolution_um": map_resolution,
+        "obs_hardness": obs_hardness,
+        "pin_safe_distance_a_um": pin_safe_distance_a,
+        "pin_safe_distance_b_um": pin_safe_distance_b,
+        "path_hardness": path_hardness,
+        "sort_pairs": sort_pairs,
+        "obs_damping_step": obs_damping_step,
+        "dry_run": dry_run,
+        "auto_map_resolution": auto_map_resolution,
+        "rescue_unrouted_nets": rescue_unrouted_nets,
+        "two_level": two_level,
+    }
+    if per_pair_obstacle_layers is not None:
+        config["per_pair_obstacle_layers"] = per_pair_obstacle_layers
+    if pin_pairs_override is not None:
+        config["pin_pairs_override"] = pin_pairs_override
+    for _k, _v in (("inner_width", inner_width), ("outer_width", outer_width),
+                   ("patch_size", patch_size), ("inner_margin", inner_margin)):
+        if _v is not None:
+            config[_k] = _v
+    with open(config_json, "w") as f:
+        json.dump(config, f)
+
+    # Find route_worker.py
+    worker_candidates = [
+        os.path.expanduser("~/Documents/GitHub/KlayoutClaw/tools/route_worker.py"),
+        os.path.expanduser("~/.klayout/pymacros/route_worker.py"),
+    ]
+    # Also check directory of __file__ if available
+    try:
+        worker_candidates.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "route_worker.py"))
+    except Exception:
+        pass
+    worker_path = None
+    for wp in worker_candidates:
+        if os.path.isfile(wp):
+            worker_path = wp
+            break
+    if worker_path is None:
+        raise ValueError("route_worker.py not found. Install the plugin with 'python install.py' or place route_worker.py in one of: " + ", ".join(worker_candidates))
+    _log("auto_route: using worker {}".format(worker_path))
+
+    # Spawn subprocess
+    python_path = python_path or os.environ.get("PYTHON_PATH")
+    if python_path:
+        cmd = "{} {} {}".format(python_path, worker_path, config_json)
+    else:
+        conda_sh = None
+        for p in [os.path.expanduser("~/miniforge3/etc/profile.d/conda.sh"),
+                   os.path.expanduser("~/anaconda3/etc/profile.d/conda.sh"),
+                   os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")]:
+            if os.path.isfile(p):
+                conda_sh = p
+                break
+        if conda_sh is None:
+            raise ValueError("conda.sh not found. Checked miniforge3, anaconda3, miniconda3.")
+        cmd = 'source {} &amp;&amp; conda activate {} &amp;&amp; python {} {}'.format(
+            conda_sh,
+            conda_env, worker_path, config_json
+        )
+    _log("auto_route: running: {}".format(cmd))
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True, text=True, timeout=timeout_sec
+        )
+    except subprocess.TimeoutExpired:
+        raise ValueError("Routing timed out after {} seconds. The layout may be too complex — try increasing map_resolution, reducing obstacles, or raising the 'timeout' parameter (max 600).".format(int(timeout_sec)))
+    except Exception as e:
+        raise ValueError("Failed to run route_worker.py subprocess: {}".format(e))
+
+    # Check output JSON first — worker writes structured errors there before exit(1)
+    if os.path.isfile(output_json):
+        with open(output_json, "r") as f:
+            result = json.load(f)
+        if result.get("status") == "error":
+            raise ValueError("Routing failed: {}".format("; ".join(result.get("errors", ["unknown"]))))
+    elif proc.returncode != 0:
+        _log("auto_route stderr: {}".format(proc.stderr))
+        stderr = proc.stderr.strip()
+        err_lines = [l for l in stderr.split("\n") if l.strip()]
+        last_err = err_lines[-1] if err_lines else "unknown error"
+        raise ValueError("Routing subprocess failed (exit code {}): {}\nFull stderr:\n{}".format(
+            proc.returncode, last_err, stderr[:500]))
+    else:
+        raise ValueError("route_worker.py ran but produced no output file. This usually means it crashed before writing results.\nstdout: {}\nstderr: {}".format(
+            proc.stdout[:300], proc.stderr[:300]))
+
+    # Dry-run: route_worker returns status="dry_run" with pairs[] preview and
+    # no paths[]. Skip the insert loop and return the preview directly so the
+    # layout is untouched.
+    if result.get("status") == "dry_run":
+        try:
+            os.remove(input_gds)
+            os.remove(config_json)
+            os.remove(output_json)
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
+        preview_pairs = result.get("pairs", [])
+        assignment_engine = result.get("assignment_engine", "ordered_loop")
+        assignment_label = "ordered-loop" if assignment_engine == "ordered_loop" else assignment_engine
+        return json.dumps({
+            "status": "dry_run",
+            "routed_pairs": 0,
+            "total_pins_a": result.get("total_pins_a", 0),
+            "total_pins_b": result.get("total_pins_b", 0),
+            "pairs": preview_pairs,
+            "assignment_engine": assignment_engine,
+            "map_resolution_um_used": result.get("map_resolution_um_used", map_resolution),
+            "routing_grid": result.get("routing_grid"),
+            "errors": result.get("errors", []),
+            "next_step_suggestion": (
+                "dry_run preview: {} assignments computed by {}, no routes inserted. "
+                "Review the pairs[] array — if the matching looks good, call auto_route again with dry_run=false. "
+                "If a pair looks wrong, flag obstacles via per_pair_obstacle_layers[pair_idx] before the real run."
+            ).format(len(preview_pairs), assignment_label),
+        })
+
+    # Insert routed paths into layout
+    ol_parts = output_layer.split("/")
+    ol_num = int(ol_parts[0])
+    ol_dt = int(ol_parts[1]) if len(ol_parts) &gt; 1 else 0
+    layer_idx = _layout.layer(ol_num, ol_dt)
+    dbu = _layout.dbu
+    path_width_dbu = int(round(path_width / dbu))
+
+    routes = result.get("paths", [])
+    inserted = 0
+    for route in routes:
+        pts = route.get("points_dbu", [])
+        if len(pts) &lt; 2:
+            continue
+        # Two-level paths carry their own write-field width (inner vs outer);
+        # single-pass paths use the tool's path_width.
+        w_dbu = path_width_dbu
+        if route.get("width_um") is not None:
+            w_dbu = int(round(float(route["width_um"]) / dbu))
+        path_obj = pya.Path(
+            [pya.Point(int(round(p[0])), int(round(p[1]))) for p in pts],
+            w_dbu
+        )
+        _top_cell.shapes(layer_idx).insert(path_obj)
+        inserted += 1
+
+    # Two-level boundary connection patches: square boxes on output_layer that
+    # bridge the inner and outer route segments at the write-field boundary.
+    patches_inserted = 0
+    for patch in result.get("patches", []) or []:
+        try:
+            px = int(round(patch["x_dbu"]))
+            py = int(round(patch["y_dbu"]))
+            hs = int(round(patch["size_dbu"])) // 2
+        except (KeyError, TypeError, ValueError):
+            continue
+        _top_cell.shapes(layer_idx).insert(pya.Box(px - hs, py - hs, px + hs, py + hs))
+        patches_inserted += 1
+
+    _refresh_view()
+    _log("auto_route: inserted {} paths, {} patches".format(inserted, patches_inserted))
+
+    # Cleanup temp files
+    try:
+        os.remove(input_gds)
+        os.remove(config_json)
+        os.remove(output_json)
+        os.rmdir(tmp_dir)
+    except Exception:
+        pass
+
+    # Compose a next_step_suggestion pointing the agent at the inspection
+    # tools most relevant to the outcome. Static string — the intent is to
+    # nudge the agent, not to prescribe.
+    n_errors = len(result.get("errors", []))
+    status = result.get("status", "unknown")
+    is_two_level = result.get("two_level") is True
+    # For two-level the worker reports routed_pairs as fully-connected NETS
+    # (inner+outer+patch), and `inserted` counts both segments — use the
+    # worker's net count so the success/partial hint is meaningful.
+    routed_pairs_out = result.get("routed_pairs", inserted) if is_two_level else inserted
+    total_pairs = (result.get("n_nets", routed_pairs_out) if is_two_level
+                   else min(result.get("total_pins_a", 0), result.get("total_pins_b", 0)))
+    rescued_nets = result.get("rescued_nets", 0)
+    rescue_hint = ""
+    if rescued_nets:
+        rescue_hint = (" NOTE: {} net(s) needed the dense-fan-out rescue (relaxed the clearance halos blocking the "
+                       "last route(s); prior routes stayed hard, so no crossing should have been added). "
+                       "Confirm contact_isolation is still clean via route_inspect / evaluate_design.").format(rescued_nets)
+    tl_hint = ""
+    if is_two_level:
+        tl_hint = (" two-level routing used (inner-fine / outer-coarse, joined by "
+                   "{} boundary patch(es)); inspect inner_grid/outer_grid.".format(patches_inserted))
+    if status == "success" and n_errors == 0 and routed_pairs_out == total_pairs:
+        next_step = ("Routes committed. Call screenshot (optionally with zoom_box over the device region) to visually verify, "
+                     "then route_inspect to map each route_id back to its contact/pad, "
+                     "and evaluate_design with contact_isolation to detect crossings." + rescue_hint + tl_hint)
+    elif inserted &gt; 0:
+        next_step = ("Partial routing ({}/{} pairs). Call route_inspect to see which pairs succeeded, "
+                     "screenshot(zoom_box=...) over the unrouted region, and consider per_pair_obstacle_layers or a higher timeout for the retry.".format(routed_pairs_out, total_pairs) + tl_hint)
+    else:
+        next_step = ("No routes inserted. Re-check pin_layer_a / pin_layer_b have geometry via get_layout_info, "
+                     "try dry_run=True first to preview the ordered-loop assignment, and consult the errors list.")
+
+    response = {
+        "status": status,
+        "routed_pairs": routed_pairs_out,
+        "total_pins_a": result.get("total_pins_a", 0),
+        "total_pins_b": result.get("total_pins_b", 0),
+        "output_layer": output_layer,
+        "path_width_um": path_width,
+        "map_resolution_um_used": result.get("map_resolution_um_used", map_resolution),
+        "routing_grid": result.get("routing_grid"),
+        "assignment_engine": result.get("assignment_engine"),
+        "n_nets": result.get("n_nets"),
+        "rescued_nets": rescued_nets,
+        "errors": result.get("errors", []),
+        "next_step_suggestion": next_step,
+    }
+    if result.get("rescue_note"):
+        response["rescue_note"] = result.get("rescue_note")
+    if is_two_level:
+        response["two_level"] = True
+        response["inner_grid"] = result.get("inner_grid")
+        response["outer_grid"] = result.get("outer_grid")
+        response["patches_inserted"] = patches_inserted
+        response["boundary_points_um"] = result.get("boundary_points_um")
+        response["two_level_reason"] = result.get("two_level_reason")
+    return json.dumps(response)
+
+
+def _iter_routes_on_layer(layer_num, datatype):
+    """Yield (route_id, endpoints_dbu, length_dbu, polygon) for every route-shaped
+    object on the given (layer, datatype). Handles both pya.Path shapes and
+    polygons (paths get converted to polygons via Region for crossing detection,
+    but spine endpoints are preserved from the Path for accuracy).
+
+    Returns a list of dicts, ordered stably: paths first (in shape-iteration
+    order), then polygons. route_id is the index into the returned list and
+    matches the indexing used by evaluate_design's contact_isolation
+    crossing_pairs — agents can cross-reference the two tools safely.
+    """
+    global _layout, _top_cell
+    layer_idx = _layout.layer(layer_num, datatype)
+    routes = []
+    # Single pass over recursive shapes so the indexing is stable for
+    # cross-tool reference (matches evaluate_worker order-of-iteration).
+    rsi = _top_cell.begin_shapes_rec(layer_idx)
+    while not rsi.at_end():
+        shape = rsi.shape()
+        try:
+            if shape.is_path():
+                path = shape.path
+                pts = list(path.each_point())
+                if len(pts) &gt;= 2:
+                    length_dbu = 0
+                    for i in range(len(pts) - 1):
+                        length_dbu += pts[i].distance(pts[i + 1])
+                    routes.append({
+                        "kind": "path",
+                        "endpoints_dbu": [(pts[0].x, pts[0].y), (pts[-1].x, pts[-1].y)],
+                        "length_dbu": length_dbu,
+                        "polygon": shape.polygon,  # pya.Polygon of the path outline
+                    })
+            elif shape.is_polygon() or shape.is_simple_polygon() or shape.is_box():
+                poly = shape.polygon
+                # For polygons, approximate endpoints as the two most distant
+                # vertices — matches evaluate_worker's fallback logic.
+                hull_pts = list(poly.each_point_hull())
+                if len(hull_pts) &gt;= 2:
+                    max_d = 0
+                    ep_a = hull_pts[0]
+                    ep_b = hull_pts[1]
+                    for i in range(len(hull_pts)):
+                        for j in range(i + 1, len(hull_pts)):
+                            d = hull_pts[i].distance(hull_pts[j])
+                            if d &gt; max_d:
+                                max_d = d
+                                ep_a = hull_pts[i]
+                                ep_b = hull_pts[j]
+                    routes.append({
+                        "kind": "polygon",
+                        "endpoints_dbu": [(ep_a.x, ep_a.y), (ep_b.x, ep_b.y)],
+                        "length_dbu": max_d,
+                        "polygon": poly,
+                    })
+        except Exception:
+            # Defensive: skip shapes we can't inspect rather than crash
+            pass
+        rsi.next()
+    return routes
+
+
+def _parse_layer_spec(spec):
+    """Parse 'L/DT' strings into (layer, datatype) ints. Returns None on failure."""
+    try:
+        parts = str(spec).split("/")
+        return (int(parts[0]), int(parts[1]) if len(parts) &gt; 1 else 0)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _tool_route_inspect(args):
+    """Report per-route metadata (contact, pad, length, crossings) for every
+    route on the given layer. Read-only — never modifies the layout.
+
+    route_id in the output matches the indexing used by evaluate_design's
+    contact_isolation.crossing_pairs, so agents can cross-reference the two
+    tools without re-deriving the order.
+    """
+    global _layout, _top_cell
+    _ensure_valid_handles()
+
+    route_spec = args.get("route_layer")
+    if not route_spec:
+        raise ValueError("route_layer is required (e.g. '3/0')")
+    rl = _parse_layer_spec(route_spec)
+    if rl is None:
+        raise ValueError("Invalid route_layer spec '{}'. Expected 'L/DT' (e.g. '3/0').".format(route_spec))
+
+    contact_specs = args.get("contact_layers")
+    if not contact_specs:
+        raise ValueError(
+            "route_inspect: 'contact_layers' is required and must be a non-empty "
+            "list of layer specs the route endpoints land on. No default is assumed.")
+    if isinstance(contact_specs, str):
+        contact_specs = [contact_specs]
+
+    pad_spec = args.get("pad_layer")
+    if not pad_spec:
+        raise ValueError(
+            "route_inspect: 'pad_layer' is required (layer spec for bonding "
+            "pads). No default is assumed.")
+    # Default tolerance aligned with evaluate_design connectivity/route_endpoints
+    # (both default 15.0). A stricter 5.0 here made route_inspect report
+    # from_contact/to_pad=null on routes that connectivity scored 1.0.
+    tolerance_um = float(args.get("tolerance_um", 15.0))
+
+    # Issue #34: optional labeled-crossings PNG. Default path uses an
+    # epoch timestamp so successive calls don't clobber prior output.
+    import time as _time
+    image_path_arg = args.get("image_path")
+    if image_path_arg:
+        labeled_image_path = os.path.abspath(str(image_path_arg))
+    else:
+        labeled_image_path = "/tmp/route_inspect_{}.png".format(int(_time.time()))
+
+    dbu = _layout.dbu
+    tolerance_dbu = int(round(tolerance_um / dbu))
+
+    # Walk route shapes on route_layer
+    routes = _iter_routes_on_layer(rl[0], rl[1])
+
+    # Collect contact shapes per layer (with centroids) and build a flat list
+    contact_entries = []  # [{layer, shape_idx, centroid_um, region, bbox_dbu}, ...]
+    for cspec in contact_specs:
+        cl = _parse_layer_spec(cspec)
+        if cl is None:
+            continue
+        li = _layout.layer(cl[0], cl[1])
+        rsi = _top_cell.begin_shapes_rec(li)
+        idx = 0
+        while not rsi.at_end():
+            s = rsi.shape()
+            if not s.is_text():
+                try:
+                    poly = s.polygon
+                    bb = poly.bbox()
+                    cx_dbu = (bb.left + bb.right) / 2.0
+                    cy_dbu = (bb.bottom + bb.top) / 2.0
+                    contact_entries.append({
+                        "layer": cspec,
+                        "shape_idx": idx,
+                        "centroid_um": [round(cx_dbu * dbu, 4), round(cy_dbu * dbu, 4)],
+                        "centroid_dbu": (cx_dbu, cy_dbu),
+                        "region": pya.Region(poly),
+                    })
+                    idx += 1
+                except Exception:
+                    pass
+            rsi.next()
+
+    # Collect pad shapes
+    pad_entries = []
+    pl = _parse_layer_spec(pad_spec)
+    if pl is not None:
+        pli = _layout.layer(pl[0], pl[1])
+        rsi = _top_cell.begin_shapes_rec(pli)
+        idx = 0
+        while not rsi.at_end():
+            s = rsi.shape()
+            if not s.is_text():
+                try:
+                    poly = s.polygon
+                    bb = poly.bbox()
+                    cx_dbu = (bb.left + bb.right) / 2.0
+                    cy_dbu = (bb.bottom + bb.top) / 2.0
+                    pad_entries.append({
+                        "layer": pad_spec,
+                        "shape_idx": idx,
+                        "centroid_um": [round(cx_dbu * dbu, 4), round(cy_dbu * dbu, 4)],
+                        "centroid_dbu": (cx_dbu, cy_dbu),
+                        "region": pya.Region(poly),
+                    })
+                    idx += 1
+                except Exception:
+                    pass
+            rsi.next()
+
+    # Helper: find the closest shape to a given (x, y) in dbu, within tolerance
+    def _closest_shape(entries, ep_dbu, tolerance_dbu):
+        best = None
+        best_d = float("inf")
+        ex, ey = ep_dbu
+        for entry in entries:
+            cx, cy = entry["centroid_dbu"]
+            # Prefer point-in-region (endpoint actually lands on the shape)
+            pt_region = pya.Region(pya.Box(
+                int(ex) - tolerance_dbu, int(ey) - tolerance_dbu,
+                int(ex) + tolerance_dbu, int(ey) + tolerance_dbu,
+            ))
+            if not (entry["region"] &amp; pt_region).is_empty():
+                # Endpoint touches shape; use centroid distance as ranker
+                d = ((ex - cx) ** 2 + (ey - cy) ** 2) ** 0.5
+                if d &lt; best_d:
+                    best_d = d
+                    best = entry
+        if best is not None:
+            return best
+        # Fallback: nearest centroid within tolerance
+        for entry in entries:
+            cx, cy = entry["centroid_dbu"]
+            d = ((ex - cx) ** 2 + (ey - cy) ** 2) ** 0.5
+            if d &lt;= tolerance_dbu and d &lt; best_d:
+                best_d = d
+                best = entry
+        return best
+
+    # Per-route classification
+    out_routes = []
+    for ridx, r in enumerate(routes):
+        ep_a_dbu, ep_b_dbu = r["endpoints_dbu"]
+        contact_match = _closest_shape(contact_entries, ep_a_dbu, tolerance_dbu) or \
+                        _closest_shape(contact_entries, ep_b_dbu, tolerance_dbu)
+        pad_match = _closest_shape(pad_entries, ep_b_dbu, tolerance_dbu) or \
+                    _closest_shape(pad_entries, ep_a_dbu, tolerance_dbu)
+
+        from_contact = None
+        if contact_match is not None:
+            from_contact = {
+                "layer": contact_match["layer"],
+                "shape_idx": contact_match["shape_idx"],
+                "centroid_um": contact_match["centroid_um"],
+            }
+        to_pad = None
+        if pad_match is not None:
+            to_pad = {
+                "layer": pad_match["layer"],
+                "shape_idx": pad_match["shape_idx"],
+                "centroid_um": pad_match["centroid_um"],
+            }
+
+        out_routes.append({
+            "route_id": ridx,
+            "kind": r["kind"],
+            "layer": route_spec,
+            "length_um": round(r["length_dbu"] * dbu, 4),
+            "endpoints_um": [
+                [round(ep_a_dbu[0] * dbu, 4), round(ep_a_dbu[1] * dbu, 4)],
+                [round(ep_b_dbu[0] * dbu, 4), round(ep_b_dbu[1] * dbu, 4)],
+            ],
+            "from_contact": from_contact,
+            "to_pad": to_pad,
+        })
+
+    # Crossings among routes on this same layer (uses raw polygon areas — no
+    # junction filtering, so adjacent-at-endpoint shapes that touch mid-body
+    # will show up here; agents typically read this alongside
+    # evaluate_design's contact_isolation.crossing_pairs which applies the
+    # junction filter).
+    crossings = []
+    for i in range(len(routes)):
+        for j in range(i + 1, len(routes)):
+            inter = routes[i]["polygon"] &amp; routes[j]["polygon"] if hasattr(routes[i]["polygon"], "__and__") else None
+            if inter is None:
+                ri_reg = pya.Region(routes[i]["polygon"])
+                rj_reg = pya.Region(routes[j]["polygon"])
+                ov = ri_reg &amp; rj_reg
+            else:
+                ov = pya.Region(inter)
+            if ov.is_empty():
+                continue
+            area_um2 = round(ov.area() * dbu * dbu, 4)
+            if area_um2 &gt; 0.01:
+                crossings.append([i, j, area_um2])
+
+    # Issue #34: labeled-crossings image. Only rendered when at least
+    # one crossing was detected — empty crossings short-circuits to
+    # image_path=None so the agent can branch on it.
+    image_path_out = None
+    if crossings:
+        try:
+            image_path_out = _render_route_inspect_crossings_image(
+                routes, crossings, labeled_image_path, dbu)
+        except Exception as _exc:
+            _log("route_inspect: labeled-crossings render failed: {}".format(_exc))
+            image_path_out = None
+
+    # next_step_suggestion
+    n_unmapped = sum(1 for r in out_routes if r["from_contact"] is None or r["to_pad"] is None)
+    if crossings:
+        next_step = ("{} crossing(s) detected. Inspect crossing_pairs (route_idx_A, route_idx_B, overlap_um2) and call screenshot(zoom_box=...) over each pair. Consider re-running auto_route with narrower path_width, per_pair_obstacle_layers, or dry_run first.".format(len(crossings)))
+    elif n_unmapped:
+        next_step = ("{} route(s) are missing a contact or pad assignment (endpoints outside tolerance_um={}). Raise tolerance_um or check that pin_layer_a/b in the original auto_route call match the contact/pad layers you expected.".format(n_unmapped, tolerance_um))
+    else:
+        next_step = ("All {} routes mapped to contact + pad with no crossings. Run evaluate_design with contact_isolation + connectivity + route_endpoints to confirm full scoring.".format(len(out_routes)))
+
+    return json.dumps({
+        "status": "ok",
+        "route_layer": route_spec,
+        "num_routes": len(out_routes),
+        "routes": out_routes,
+        "crossings": crossings,
+        "crossing_pairs_format": "[route_idx_A, route_idx_B, overlap_um2]",
+        "image_path": image_path_out,
+        "next_step_suggestion": next_step,
+    })
+
+
+def _render_route_inspect_crossings_image(routes, crossings, out_path, dbu):
+    """Render a labeled PNG showing each crossing-involved route's
+    route_id near both of its endpoints.
+
+    Issue #34 spec:
+      - Bbox = union of all crossing-involved route polygons
+        (both members of every crossing pair) + 10x line-width clearance.
+      - Render the layout in that bbox via the existing screenshot path
+        (LayoutView.zoom_box + save_image).
+      - Overlay each route's route_id as ``[&lt;id&gt;]`` near both endpoints
+        using pya.QImage + pya.QPainter (no external deps required).
+      - On any rendering failure, the caller catches and returns
+        image_path=None.
+    """
+    global _layout, _layout_view
+    if _layout_view is None:
+        return None
+
+    # Collect every route_id that participates in a crossing.
+    involved_ids = set()
+    for pair in crossings:
+        involved_ids.add(int(pair[0]))
+        involved_ids.add(int(pair[1]))
+
+    # Union bbox of all involved route polygons (DBU coordinates).
+    bbox_dbu = None
+    width_dbu_max = 0
+    for rid in involved_ids:
+        try:
+            poly = routes[rid]["polygon"]
+            bb = poly.bbox()
+            if bbox_dbu is None:
+                bbox_dbu = pya.Box(bb.left, bb.bottom, bb.right, bb.top)
+            else:
+                bbox_dbu = bbox_dbu + bb
+            # Effective line-width proxy: shorter edge of the route bbox.
+            edge = min(bb.width(), bb.height())
+            if edge &gt; width_dbu_max:
+                width_dbu_max = edge
+        except Exception:
+            continue
+    if bbox_dbu is None:
+        return None
+
+    # 10x line-width clearance.
+    pad_dbu = int(round(10 * max(width_dbu_max, int(round(1.0 / dbu)))))
+    x1_um = (bbox_dbu.left - pad_dbu) * dbu
+    y1_um = (bbox_dbu.bottom - pad_dbu) * dbu
+    x2_um = (bbox_dbu.right + pad_dbu) * dbu
+    y2_um = (bbox_dbu.top + pad_dbu) * dbu
+
+    width_px = 1024
+    height_px = 768
+    abs_path = os.path.abspath(out_path)
+
+    # Step 1: render the layout in the crossing bbox to a PNG.
+    #
+    # Two prep steps are required for save_image to actually paint the
+    # design (routes / flakes / mesa / topgate / contact patches / pads):
+    #
+    #   (a) Every layer that has shapes must have a registered
+    #       LayerProperties entry — `_refresh_view()` walks
+    #       `_layout.layer_indices()` and inserts any missing entry.
+    #       Without this, layers carrying shapes but no entry are
+    #       silently skipped by `save_image`, and the rendered PNG ends
+    #       up blank under the label overlay (only the labels visible).
+    #   (b) Every registered layer must be `visible = True`. The user
+    #       (or a prior tool call) may have hidden some layers to
+    #       declutter the GUI; save_image respects that. Snapshot
+    #       current visibility, force-show all, render, then restore.
+    try:
+        _refresh_view()
+    except Exception as _exc:
+        _log("route_inspect: _refresh_view failed (continuing): {}".format(_exc))
+
+    visibility_snapshot = []
+    try:
+        lp_iter = _layout_view.begin_layers()
+        while not lp_iter.at_end():
+            lp = lp_iter.current()
+            visibility_snapshot.append((lp.source_layer, lp.source_datatype, lp.visible))
+            if not lp.visible:
+                lp.visible = True
+                _layout_view.set_layer_properties(lp_iter, lp)
+            lp_iter.next()
+    except Exception as _exc:
+        _log("route_inspect: layer-visibility force failed (continuing): {}".format(_exc))
+
+    _layout_view.zoom_box(pya.DBox(x1_um, y1_um, x2_um, y2_um))
+    _layout_view.save_image(abs_path, width_px, height_px)
+    _log("route_inspect: base PNG saved to {} (zoom_box=[{:.3f},{:.3f},{:.3f},{:.3f}], force-visible {} layers)".format(
+        abs_path, x1_um, y1_um, x2_um, y2_um, len(visibility_snapshot)))
+
+    # Restore the user's previous visibility state by source-layer/datatype lookup.
+    if visibility_snapshot:
+        try:
+            snap_by_key = {(l, d): v for (l, d, v) in visibility_snapshot}
+            lp_iter = _layout_view.begin_layers()
+            while not lp_iter.at_end():
+                lp = lp_iter.current()
+                key = (lp.source_layer, lp.source_datatype)
+                if key in snap_by_key and lp.visible != snap_by_key[key]:
+                    lp.visible = snap_by_key[key]
+                    _layout_view.set_layer_properties(lp_iter, lp)
+                lp_iter.next()
+        except Exception as _exc:
+            _log("route_inspect: visibility restore failed (non-fatal): {}".format(_exc))
+
+    # Step 2: overlay route_id labels near each endpoint of every
+    # crossing-involved route.
+    try:
+        img = pya.QImage(abs_path)
+        if img.isNull():
+            _log("route_inspect: QImage failed to load saved PNG; returning unlabeled image")
+            return abs_path
+        painter = pya.QPainter(img)
+        try:
+            painter.setRenderHint(pya.QPainter.Antialiasing, True)
+        except Exception:
+            pass
+
+        # Coordinate transform: layout-um -&gt; image-pixel.
+        # save_image fits the zoom_box into the image; px_per_um is
+        # uniform along whichever axis fits, with letterboxing on the
+        # other. Use the *minimum* px-per-um of the two axes so that
+        # labels stay inside the rendered region.
+        u_w = x2_um - x1_um
+        u_h = y2_um - y1_um
+        if u_w &lt;= 0 or u_h &lt;= 0:
+            painter.end()
+            return abs_path
+        sx = width_px / u_w
+        sy = height_px / u_h
+        s_fit = min(sx, sy)
+        # Letterbox offsets (centre the bbox in the image).
+        ox = (width_px - u_w * s_fit) / 2.0
+        oy = (height_px - u_h * s_fit) / 2.0
+
+        def _to_px(x_um, y_um):
+            # Image y grows downward; layout y grows upward.
+            px = ox + (x_um - x1_um) * s_fit
+            py = height_px - (oy + (y_um - y1_um) * s_fit)
+            return px, py
+
+        # Label style: yellow text on a translucent black box for
+        # readability against any layer-stack background.
+        font = pya.QFont()
+        try:
+            font.setPointSize(11)
+            font.setBold(True)
+        except Exception:
+            pass
+        painter.setFont(font)
+        text_pen = pya.QPen(pya.QColor(255, 220, 0))
+        bg_brush = pya.QBrush(pya.QColor(0, 0, 0, 160))
+
+        for rid in sorted(involved_ids):
+            try:
+                ep_a, ep_b = routes[rid]["endpoints_dbu"]
+            except Exception:
+                continue
+            for ep in (ep_a, ep_b):
+                ux = ep[0] * dbu
+                uy = ep[1] * dbu
+                if ux &lt; x1_um or ux &gt; x2_um or uy &lt; y1_um or uy &gt; y2_um:
+                    # Endpoint outside the rendered bbox — skip.
+                    continue
+                px, py = _to_px(ux, uy)
+                label = "[{}]".format(rid)
+                # Draw small background rect behind the label for legibility.
+                fm = painter.fontMetrics()
+                try:
+                    tw = fm.horizontalAdvance(label)
+                except Exception:
+                    try:
+                        tw = fm.width(label)
+                    except Exception:
+                        tw = 30
+                try:
+                    th = fm.height()
+                except Exception:
+                    th = 16
+                pad = 3
+                bg_rect = pya.QRectF(px + 6, py - th - pad, tw + 2 * pad, th + 2 * pad)
+                painter.fillRect(bg_rect, bg_brush)
+                painter.setPen(text_pen)
+                painter.drawText(int(px + 6 + pad), int(py - pad), label)
+        painter.end()
+        img.save(abs_path)
+        _log("route_inspect: labeled {} crossing-involved route(s) in {}".format(
+            len(involved_ids), abs_path))
+    except Exception as _exc:
+        _log("route_inspect: label overlay failed (returning unlabeled image): {}".format(_exc))
+    return abs_path
+
+
+def _tool_evaluate_design(args):
+    """Run nanodevice DRC + metric checks using external evaluate_worker.py."""
+    import tempfile
+    import subprocess
+
+    global _layout, _layout_view, _top_cell
+    _ensure_valid_handles()
+
+    # ---- evaluate_design check registry (single source of truth in the .lym;
+    # a CI test keeps _known_primitives set-equal to evaluate_worker.PRIMITIVES) ----
+    _known_primitives = ["component_overlap", "component_containment",
+                         "bulk_containment", "arm_material_class",
+                         "material_overlap_report",
+                         "contact_isolation", "route_material_compat",
+                         "connectivity", "route_endpoints",
+                         "adjacency", "solidity", "spacing"]
+    _required_args = {
+        "component_overlap": ["component", "region"],
+        "component_containment": ["component", "region"],
+        "bulk_containment": ["component"],
+        "arm_material_class": ["component", "classes"],
+        "material_overlap_report": ["materials"],
+        "contact_isolation": [],
+        "route_material_compat": [],
+        "connectivity": [],
+        "route_endpoints": [],
+        "adjacency": ["component_a", "component_b"],
+        "solidity": ["component"],
+        "spacing": ["component_a"],
+    }
+    # Required + optional arg keys per primitive. Unknown keys are rejected so a
+    # misspelled arg surfaces an actionable error instead of being silently
+    # ignored (and then often producing a confusing 0.0).
+    _allowed_args = {
+        "component_overlap": ["component", "region", "region_op"],
+        "component_containment": ["component", "region", "region_op"],
+        "bulk_containment": ["component", "bulk_region", "materials", "region_op", "core_bbox"],
+        "arm_material_class": ["component", "classes", "containment_threshold"],
+        "material_overlap_report": ["materials"],
+        "contact_isolation": ["component"],
+        "route_material_compat": ["route_component", "contact_component", "graphene",
+                                  "graphite", "tolerance_area", "attach_buffer"],
+        "connectivity": ["contact_component", "pad_component", "route_component", "tolerance"],
+        "route_endpoints": ["route_component", "target_components", "tolerance"],
+        "adjacency": ["component_a", "component_b", "tolerance"],
+        "solidity": ["component", "threshold", "direction"],
+        "spacing": ["component_a", "component_b", "min_distance"],
+    }
+    # Arg keys whose values name layer_map entries (single key or list of keys).
+    # A typo here used to yield an empty region and a silent 0.0; now it raises.
+    _layer_ref_args = ["materials", "bulk_region", "graphene", "graphite"]
+
+    # describe_checks: return the machine-readable schema and exit early, so an
+    # agent can discover each primitive's required/optional args without guessing.
+    if args.get("describe_checks"):
+        return json.dumps({"status": "ok", "describe_checks": {
+            "primitives": _known_primitives,
+            "required_args": _required_args,
+            "allowed_args": _allowed_args,
+            "layer_ref_args": _layer_ref_args,
+        }})
+
+    layer_map = args.get("layer_map", {})
+    checks = args.get("checks", None)
+    # Defensive coercion: some MCP clients (notably qlaybot's tool-call layer,
+    # which renders untyped/object params via an empty schema) serialise
+    # object/array arguments as JSON strings. Without this, layer_map arrives
+    # as a str and the validation loop below crashes with
+    # "'str' object has no attribute 'items'", which made evaluate_design
+    # unusable for every agent run. Parse strings back into structures here so
+    # the tool is robust regardless of client serialisation.
+    if isinstance(layer_map, str):
+        try:
+            layer_map = json.loads(layer_map)
+        except (ValueError, TypeError):
+            raise ValueError("'layer_map' was passed as a string that is not valid JSON: {}".format(layer_map[:160]))
+    if isinstance(checks, str):
+        try:
+            checks = json.loads(checks)
+        except (ValueError, TypeError):
+            raise ValueError("'checks' was passed as a string that is not valid JSON: {}".format(checks[:160]))
+    reference_gds = args.get("reference_gds", None)
+    python_path = args.get("python_path", None)
+    conda_env = args.get("conda_env", "instrMCPdev")
+
+    # Clamp timeout to [60, 900] seconds (default 300)
+    try:
+        timeout_sec = float(args.get("timeout", 300))
+    except (TypeError, ValueError):
+        timeout_sec = 300.0
+    if timeout_sec &lt; 60:
+        timeout_sec = 60.0
+    elif timeout_sec &gt; 900:
+        timeout_sec = 900.0
+
+    if checks is None or not isinstance(checks, list) or len(checks) == 0:
+        raise ValueError("'checks' must be a non-empty list of check objects.")
+
+    # Validate check structure before spawning subprocess (registry tables
+    # _known_primitives / _required_args / _allowed_args / _layer_ref_args are
+    # defined at the top of this function so describe_checks can reuse them).
+    for i, check in enumerate(checks):
+        if not isinstance(check, dict):
+            raise ValueError("checks[{}] must be a dict with 'name', 'args', 'weight'. Got: {}".format(i, type(check).__name__))
+        name = check.get("name")
+        if not name:
+            raise ValueError("checks[{}] missing 'name'. Each check needs {{name, args, weight}}.".format(i))
+        if name not in _known_primitives:
+            raise ValueError("checks[{}]: unknown primitive '{}'. Available: {}".format(i, name, ", ".join(_known_primitives)))
+        check_args = check.get("args")
+        if check_args is None or not isinstance(check_args, dict):
+            raise ValueError("checks[{}] ('{}') missing 'args' dict. Each check needs {{name, args, weight}}.".format(i, name))
+        if "weight" not in check:
+            raise ValueError("checks[{}] ('{}') missing 'weight'. Each check needs {{name, args, weight}}.".format(i, name))
+        for req in _required_args.get(name, []):
+            if req not in check_args:
+                raise ValueError("checks[{}] ('{}') missing required arg '{}'. Required args: {}".format(
+                    i, name, req, _required_args[name]))
+        # Reject unknown arg keys instead of silently ignoring a typo (which
+        # then falls through to a default and often scores a confusing 0.0).
+        _allowed = _allowed_args.get(name, [])
+        for k in check_args.keys():
+            if k not in _allowed:
+                raise ValueError("checks[{}] ('{}') has unknown arg '{}'. Allowed args: {}".format(
+                    i, name, k, _allowed))
+        # Validate that component/region args reference keys in layer_map
+        _component_keys = ["component", "component_a", "component_b", "contact_component",
+                           "pad_component", "route_component"]
+        for key in _component_keys:
+            val = check_args.get(key)
+            if val is not None and val not in layer_map:
+                raise ValueError("checks[{}] ('{}') arg '{}' = '{}' not found in layer_map. "
+                                 "Available keys: {}".format(i, name, key, val, list(layer_map.keys())))
+        region_val = check_args.get("region")
+        if region_val is not None:
+            region_list = [region_val] if isinstance(region_val, str) else region_val
+            for rv in region_list:
+                if rv not in layer_map:
+                    raise ValueError("checks[{}] ('{}') region '{}' not found in layer_map. "
+                                     "Available keys: {}".format(i, name, rv, list(layer_map.keys())))
+        targets = check_args.get("target_components")
+        if targets is not None:
+            for t in targets:
+                if t not in layer_map:
+                    raise ValueError("checks[{}] ('{}') target_component '{}' not found in layer_map. "
+                                     "Available keys: {}".format(i, name, t, list(layer_map.keys())))
+        # Validate material-style args that name layer_map keys (single or list):
+        # materials / bulk_region / graphene / graphite. A typo here previously
+        # resolved to an empty region and a silent 0.0 instead of an error.
+        for key in _layer_ref_args:
+            rv = check_args.get(key)
+            if rv is None:
+                continue
+            rv_list = [rv] if isinstance(rv, str) else rv
+            for v in rv_list:
+                if isinstance(v, str) and v not in layer_map:
+                    raise ValueError("checks[{}] ('{}') arg '{}' references '{}' not found in layer_map. "
+                                     "Available keys: {}".format(i, name, key, v, list(layer_map.keys())))
+        # arm_material_class 'classes': each entry is a key, list of keys, or
+        # a dict {region, ...}; validate every layer_map-referencing value.
+        classes_val = check_args.get("classes")
+        if classes_val is not None:
+            for cls in classes_val:
+                if isinstance(cls, str):
+                    cand = [cls]
+                elif isinstance(cls, list):
+                    cand = cls
+                elif isinstance(cls, dict):
+                    rg = cls.get("region")
+                    cand = [rg] if isinstance(rg, str) else (rg or [])
+                else:
+                    cand = []
+                for v in cand:
+                    if isinstance(v, str) and v not in layer_map:
+                        raise ValueError("checks[{}] ('{}') classes entry references '{}' not found in layer_map. "
+                                         "Available keys: {}".format(i, name, v, list(layer_map.keys())))
+
+    # Validate layer_map format
+    for lname, lspec in layer_map.items():
+        if isinstance(lspec, str):
+            raise ValueError("layer_map['{}'] = '{}' is a string. Expected [layer, datatype] (e.g. [20, 0]) "
+                             "or {{\"layer\": 20, \"datatype\": 0}}.".format(lname, lspec))
+
+    # Save current layout to temp GDS
+    tmp_dir = tempfile.mkdtemp(prefix="klayoutclaw_eval_")
+    input_gds = os.path.join(tmp_dir, "input.gds")
+    config_json = os.path.join(tmp_dir, "config.json")
+    output_json = os.path.join(tmp_dir, "output.json")
+
+    try:
+        save_opts = pya.SaveLayoutOptions()
+        save_opts.format = "GDS2"
+        _layout.write(input_gds, save_opts)
+        _log("evaluate_design: saved layout to {}".format(input_gds))
+
+        # Write config JSON
+        config = {
+            "gds_path": input_gds,
+            "layer_map": layer_map,
+            "checks": checks,
+            "output_path": output_json,
+        }
+        if reference_gds:
+            config["reference_gds"] = reference_gds
+        with open(config_json, "w") as f:
+            json.dump(config, f)
+
+        # Find evaluate_worker.py
+        worker_candidates = [
+            os.path.expanduser("~/Documents/GitHub/KlayoutClaw/tools/evaluate_worker.py"),
+            os.path.expanduser("~/testFolder/KlayoutClaw/tools/evaluate_worker.py"),
+            os.path.expanduser("~/.klayout/pymacros/evaluate_worker.py"),
+        ]
+        try:
+            worker_candidates.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evaluate_worker.py"))
+        except Exception:
+            pass
+        worker_path = None
+        for wp in worker_candidates:
+            if os.path.isfile(wp):
+                worker_path = wp
+                break
+        if worker_path is None:
+            raise ValueError("evaluate_worker.py not found. Searched: " + ", ".join(worker_candidates))
+        _log("evaluate_design: using worker {}".format(worker_path))
+
+        # Spawn subprocess
+        python_path = python_path or os.environ.get("PYTHON_PATH")
+        if python_path:
+            cmd = "{} {} {}".format(python_path, worker_path, config_json)
+        else:
+            conda_sh = None
+            for p in [os.path.expanduser("~/miniforge3/etc/profile.d/conda.sh"),
+                       os.path.expanduser("~/anaconda3/etc/profile.d/conda.sh"),
+                       os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")]:
+                if os.path.isfile(p):
+                    conda_sh = p
+                    break
+            if conda_sh is None:
+                raise ValueError("conda.sh not found. Checked miniforge3, anaconda3, miniconda3.")
+            cmd = 'source {} &amp;&amp; conda activate {} &amp;&amp; python {} {}'.format(
+                conda_sh, conda_env, worker_path, config_json
+            )
+        _log("evaluate_design: running: {}".format(cmd))
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", cmd],
+                capture_output=True, text=True, timeout=timeout_sec
+            )
+        except subprocess.TimeoutExpired:
+            raise ValueError("Evaluation timed out after {} seconds. Layout may be too complex — raise the 'timeout' parameter (max 900) or reduce the number of checks.".format(int(timeout_sec)))
+        except Exception as e:
+            raise ValueError("Failed to run evaluate_worker.py: {}".format(e))
+
+        if proc.returncode != 0:
+            _log("evaluate_design stderr: {}".format(proc.stderr))
+            stderr = proc.stderr.strip()
+            err_lines = [l for l in stderr.split("\n") if l.strip()]
+            last_err = err_lines[-1] if err_lines else "unknown error"
+            raise ValueError("Evaluation subprocess failed (exit code {}): {}".format(proc.returncode, last_err))
+
+        # Read output
+        if not os.path.isfile(output_json):
+            raise ValueError("evaluate_worker.py produced no output file.\nstdout: {}\nstderr: {}".format(
+                proc.stdout[:300], proc.stderr[:300]))
+
+        with open(output_json, "r") as f:
+            result = json.load(f)
+
+        if result.get("status") == "error":
+            raise ValueError("Evaluation failed: {}".format(result.get("error", "unknown")))
+
+        return json.dumps(result)
+
+    finally:
+        # Cleanup temp files
+        for p in [input_gds, config_json, output_json]:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        try:
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
+
+
+def _tool_validate_pixel_size(args):
+    """Validate pixel_size and optionally compute marker spacing from a GDS template."""
+    pixel_size = args.get("pixel_size")
+    template_gds = args.get("template_gds", None)
+    image_path = args.get("image_path", None)
+    if pixel_size is None:
+        raise ValueError("Missing required parameter: pixel_size")
+
+    warnings = []
+    valid = True
+
+    # Check range [0.01, 2.0]
+    if pixel_size &lt; 0.01 or pixel_size &gt; 2.0:
+        valid = False
+        warnings.append("pixel_size {} is outside valid range [0.01, 2.0] um/px".format(pixel_size))
+
+    # Map to likely objective magnification
+    objective_map = [
+        (0.05, "100x"),
+        (0.087, "100x"),
+        (0.1, "50x"),
+        (0.25, "20x"),
+        (0.5, "10x"),
+    ]
+    likely_objective = None
+    best_dist = float("inf")
+    for ref_ps, obj_label in objective_map:
+        dist = abs(pixel_size - ref_ps)
+        if dist &lt; best_dist:
+            best_dist = dist
+            likely_objective = obj_label
+
+    # Compute marker_spacing_um from template_gds if provided
+    marker_spacing_um = None
+    if template_gds:
+        try:
+            tl = pya.Layout()
+            tl.read(template_gds)
+            # Find L5/0 layer
+            l5_idx = None
+            for li in tl.layer_indices():
+                linfo = tl.get_info(li)
+                if linfo.layer == 5 and linfo.datatype == 0:
+                    l5_idx = li
+                    break
+            if l5_idx is not None and tl.top_cell() is not None:
+                tc = tl.top_cell()
+                shape_centroids = []
+                rsi = tc.begin_shapes_rec(l5_idx)
+                while not rsi.at_end():
+                    s = rsi.shape()
+                    if not s.is_text():
+                        bb = s.bbox()
+                        cx = (bb.left + bb.right) / 2.0
+                        cy = (bb.bottom + bb.top) / 2.0
+                        shape_centroids.append((cx, cy))
+                    rsi.next()
+                if len(shape_centroids) &gt;= 2:
+                    tdbu = tl.dbu
+                    # Cluster nearby shapes into markers
+                    # (handles multi-polygon markers like crosses)
+                    cluster_radius = 20.0 / tdbu  # 20 um in dbu
+                    clusters = []  # list of [sum_x, sum_y, count]
+                    for (sx, sy) in shape_centroids:
+                        merged = False
+                        for cl in clusters:
+                            mcx = cl[0] / cl[2]
+                            mcy = cl[1] / cl[2]
+                            dx = sx - mcx
+                            dy = sy - mcy
+                            if (dx * dx + dy * dy) ** 0.5 &lt; cluster_radius:
+                                cl[0] += sx
+                                cl[1] += sy
+                                cl[2] += 1
+                                merged = True
+                                break
+                        if not merged:
+                            clusters.append([sx, sy, 1])
+                    if len(clusters) &gt;= 2:
+                        marker_centers = [(cl[0] / cl[2], cl[1] / cl[2]) for cl in clusters]
+                        min_dist = float("inf")
+                        for i in range(len(marker_centers)):
+                            for j in range(i + 1, len(marker_centers)):
+                                dx = marker_centers[i][0] - marker_centers[j][0]
+                                dy = marker_centers[i][1] - marker_centers[j][1]
+                                d = (dx * dx + dy * dy) ** 0.5
+                                if d &lt; min_dist:
+                                    min_dist = d
+                        marker_spacing_um = round(min_dist * tdbu, 6)
+                    else:
+                        warnings.append("GDS template has fewer than 2 L5/0 markers (after clustering)")
+                else:
+                    warnings.append("GDS template has fewer than 2 L5/0 markers")
+            else:
+                warnings.append("GDS template has no L5/0 layer or no top cell")
+        except Exception as e:
+            warnings.append("Failed to read template_gds: {}".format(e))
+
+    return json.dumps({
+        "status": "ok",
+        "valid": valid,
+        "pixel_size": pixel_size,
+        "likely_objective": likely_objective,
+        "warnings": warnings,
+        "marker_spacing_um": marker_spacing_um,
+    })
+
+
+def _tool_close_layout_view(args):
+    """Close one or more KLayout layout tabs.
+
+    Modes (when 'index' is omitted):
+      - 'others' (default) — close every tab except the currently active one
+      - 'current'          — close only the active tab
+      - 'all'              — close every open tab
+    If 'index' is provided, close that specific tab instead (by 0-based index).
+    After closing, re-acquires MCP handles so subsequent tool calls see a valid view.
+    """
+    global _layout, _layout_view, _top_cell
+    mw = pya.Application.instance().main_window()
+    if mw is None:
+        return json.dumps({"status": "error", "error": "no main window"})
+
+    initial_count = mw.views()
+    if initial_count == 0:
+        return json.dumps({"status": "ok", "closed": 0, "remaining": 0, "note": "no views to close"})
+
+    index = args.get("index")
+    mode = args.get("mode", "others")
+
+    # Snapshot the currently active view so we can keep it across closes
+    try:
+        cur_view = mw.current_view()
+        active_id = id(cur_view) if cur_view is not None else None
+    except Exception:
+        active_id = None
+
+    # Collect (index, id) for all open views up front — indices shift as we close
+    view_ids = []
+    for i in range(initial_count):
+        v = mw.view(i)
+        if v is not None:
+            view_ids.append(id(v))
+
+    # Decide which view ids to close
+    targets = []
+    if index is not None:
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return json.dumps({"status": "error", "error": "'index' must be an integer"})
+        if idx &lt; 0 or idx &gt;= initial_count:
+            return json.dumps({"status": "error", "error": "index {} out of range [0, {})".format(idx, initial_count)})
+        targets.append(view_ids[idx])
+    elif mode == "current":
+        if active_id is not None:
+            targets.append(active_id)
+    elif mode == "all":
+        targets = list(view_ids)
+    elif mode == "others":
+        targets = [vid for vid in view_ids if vid != active_id]
+    else:
+        return json.dumps({"status": "error", "error": "mode must be one of: current, others, all"})
+
+    closed = 0
+    errors = []
+    for vid in targets:
+        # Re-find the view by id — indices shift after each close
+        found_idx = None
+        for i in range(mw.views()):
+            v = mw.view(i)
+            if v is not None and id(v) == vid:
+                found_idx = i
+                break
+        if found_idx is None:
+            continue
+        try:
+            # Mark the view's layouts as non-dirty so KLayout doesn't pop up
+            # a modal "Save changes?" dialog (which would block the MCP server
+            # on the Qt main thread). We do this by writing each cellview out
+            # to a throwaway temp file via LayoutView.save_as(cv_idx, path, opts)
+            # — KLayout considers a freshly-saved layout clean (is_dirty() flips
+            # to False after save_as). The temp file is left on disk (OS cleans
+            # /tmp / $TMPDIR).
+            target_view = mw.view(found_idx)
+            if target_view is not None:
+                try:
+                    if target_view.is_dirty():
+                        for ci in range(target_view.cellviews()):
+                            tmp_fd, tmp_path = tempfile.mkstemp(
+                                prefix="klayoutclaw_close_", suffix=".gds")
+                            os.close(tmp_fd)
+                            try:
+                                target_view.save_as(ci, tmp_path, pya.SaveLayoutOptions())
+                            except Exception as save_err:
+                                _log("close_layout_view: save_as failed for cv {} ({}); attempting close anyway".format(ci, save_err))
+                except Exception as mark_err:
+                    _log("close_layout_view: mark-clean pass failed: {}".format(mark_err))
+            mw.select_view(found_idx)
+            mw.close_current_view()
+            closed += 1
+        except Exception as e:
+            errors.append("failed to close view id={}: {}".format(vid, e))
+
+    remaining = mw.views()
+
+    # After closing, our module-level _layout / _layout_view / _top_cell may
+    # point at a destroyed object. Re-acquire handles so the next tool call
+    # doesn't segfault. If no views remain, the next create_layout will rebuild.
+    try:
+        if remaining &gt; 0:
+            _layout_view = mw.current_view()
+            if _layout_view is not None:
+                cv = _layout_view.active_cellview()
+                _layout = cv.layout() if cv is not None else None
+                _top_cell = cv.cell if cv is not None else None
+        else:
+            _layout = None
+            _layout_view = None
+            _top_cell = None
+    except Exception as e:
+        errors.append("handle refresh after close failed: {}".format(e))
+
+    _refresh_view() if remaining &gt; 0 else None
+
+    result = {"status": "ok", "closed": closed, "remaining": remaining, "mode": mode}
+    if index is not None:
+        result["index"] = int(index)
+    if errors:
+        result["errors"] = errors
+    return json.dumps(result)
+
+
+# ---------------------------------------------------------------------------
+# VC (Version Control) tool thunks — Phase 5 §5.2.4
+#
+# Each thunk ensures cached layout handles are fresh, imports the pure-Python
+# handler module lazily (so macro load doesn't fail if the tools/ tree is
+# misplaced), and forwards to tools.vc_mcp_handlers.  The handler module
+# owns the REGISTRY keyed by id(layout).
+# ---------------------------------------------------------------------------
+
+
+def _vc_ensure_handlers_importable():
+    """Insert the tools/ directory onto sys.path so ``import
+    tools.vc_mcp_handlers`` resolves no matter where the plugin was
+    installed from.  Idempotent."""
+    # Candidate parents that contain a ``tools/`` subdir with
+    # ``vc_mcp_handlers.py``.
+    candidates = [
+        os.path.expanduser("~/Documents/GitHub/KlayoutClaw"),
+        os.path.expanduser("~/testFolder/KlayoutClaw"),
+        os.path.expanduser("~/.klayout/pymacros"),
+    ]
+    try:
+        candidates.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    for parent in candidates:
+        if not parent:
+            continue
+        handler_path = os.path.join(parent, "tools", "vc_mcp_handlers.py")
+        if os.path.isfile(handler_path):
+            if parent not in sys.path:
+                sys.path.insert(0, parent)
+            return
+
+
+def _vc_gds_hint():
+    """Best-effort detection of the gds path associated with the current
+    layout.  Returns None if unavailable."""
+    try:
+        cv = _layout_view.active_cellview() if _layout_view is not None else None
+        if cv is not None:
+            fn = getattr(cv, "filename", None)
+            if isinstance(fn, str) and fn:
+                return os.path.abspath(fn)
+    except Exception:
+        pass
+    return None
+
+
+def _tool_vc_init(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    hint = args.get("gds_path") or _vc_gds_hint()
+    result = _handlers.vc_init(args or {}, layout=_layout, gds_path_hint=hint)
+    return json.dumps(result)
+
+
+def _tool_vc_checkpoint(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_checkpoint(args or {}, layout=_layout,
+                                     gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_vc_history(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_history(args or {}, layout=_layout,
+                                  gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_vc_checkout(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_checkout(args or {}, layout=_layout,
+                                   gds_path_hint=_vc_gds_hint())
+    # checkout rewrites the layout — refresh the GUI.
+    try:
+        _refresh_view()
+    except Exception:
+        pass
+    return json.dumps(result)
+
+
+def _tool_vc_diff(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_diff(args or {}, layout=_layout,
+                               gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_vc_branch(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_branch(args or {}, layout=_layout,
+                                 gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_vc_tag(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_tag(args or {}, layout=_layout,
+                              gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_vc_export(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_export(args or {}, layout=_layout,
+                                 gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_vc_status(args):
+    _ensure_valid_handles()
+    _vc_ensure_handlers_importable()
+    import tools.vc_mcp_handlers as _handlers
+    result = _handlers.vc_status(args or {}, layout=_layout,
+                                 gds_path_hint=_vc_gds_hint())
+    return json.dumps(result)
+
+
+def _tool_ping(args):
+    """Cheap liveness probe (also exposed as the JSON-RPC `ping` method).
+
+    Returns server status without touching `_layout`, so the agent can tell a
+    wedged bridge (e.g. one returning a stale/fixed result) from a slow-but-alive
+    call. Exempt from the single-threaded busy rejection.
+    """
+    return json.dumps({
+        "status": "ok",
+        "ts": datetime.datetime.now().isoformat(),
+        "busy": _tool_busy,
+        "busy_tool": _tool_busy_name,
+        "pid": os.getpid(),
+    })
+
+
+_TOOL_DISPATCH = {
+    "ping": _tool_ping,
+    "create_layout": _tool_create_layout,
+    "execute_script": _tool_execute_script,
+    "save_layout": _tool_save_layout,
+    "get_layout_info": _tool_get_layout_info,
+    "screenshot": _tool_screenshot,
+    "auto_route": _tool_auto_route,
+    "route_inspect": _tool_route_inspect,
+    "evaluate_design": _tool_evaluate_design,
+    "validate_pixel_size": _tool_validate_pixel_size,
+    "close_layout_view": _tool_close_layout_view,
+    # NOTE: vc_* tools intentionally not registered (issue #25 — review
+    # session 2026-05-05). Server-side off-switch: vc_init was the
+    # confirmed hang trigger, and stripping the dispatch entries is the
+    # cheapest way to ensure tools/call cannot reach the vc_* handlers.
+    # The handler functions (_tool_vc_init etc.) are kept defined above
+    # in case the off-switch is reverted.
+}
+
+
+# ---------------------------------------------------------------------------
+# JSON-RPC 2.0 dispatcher
+# ---------------------------------------------------------------------------
+
+MAX_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
+
+# Guard against re-entrant / parallel tool calls.
+# QTcpServer runs on the Qt main thread. If waitForReadyRead() processes
+# events during a long-running tool, a second newConnection signal can
+# fire and try to execute another tool concurrently — corrupting shared
+# layout state. We track whether a tool is running and return an
+# immediate retry-friendly error to the second caller.
+_tool_busy = False
+_tool_busy_name = None
+
+
+def _handle_jsonrpc(body_str):
+    """Parse a JSON-RPC 2.0 request and return (response_dict_or_None, http_status)."""
+    global _tool_busy, _tool_busy_name
+    try:
+        req = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError) as e:
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error: " + str(e)}}, 200
+
+    req_id = req.get("id")
+    method = req.get("method")
+    params = req.get("params", {})
+
+    _log("JSON-RPC method={} id={}".format(method, req_id))
+
+    if not method:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "Invalid Request: missing method"}}, 200
+
+    # --- initialize ---
+    if method == "initialize":
+        sid = _ensure_session()
+        result = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "KlayoutClaw", "version": "0.6"}
+        }
+        _notify_request(method, True)
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}, 200
+
+    # --- notifications/initialized ---
+    if method == "notifications/initialized":
+        # Notification — no response body needed
+        return None, 200
+
+    # --- tools/list ---
+    if method == "tools/list":
+        result = {"tools": TOOLS}
+        _notify_request(method, True)
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}, 200
+
+    # --- ping (cheap liveness probe) ---
+    # Bypasses the serial tools/call path so a watchdog can distinguish a wedged
+    # bridge from a slow-but-alive one. Reports whether a heavy tool is in flight
+    # (busy/busy_tool) and the server pid. Microsecond response; never touches
+    # _layout.
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {
+            "status": "ok",
+            "ts": datetime.datetime.now().isoformat(),
+            "busy": _tool_busy,
+            "busy_tool": _tool_busy_name,
+            "pid": os.getpid(),
+        }}, 200
+
+    # --- tools/call ---
+    if method == "tools/call":
+        tool_name = params.get("name")
+        tool_args = params.get("arguments", {})
+        handler = _TOOL_DISPATCH.get(tool_name)
+        if handler is None:
+            err_msg = "Tool '{}' not found. Available tools: {}".format(
+                tool_name, ", ".join(sorted(_TOOL_DISPATCH.keys())))
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": err_msg}], "isError": True}}, 200
+
+        # `ping` is a trivial liveness probe — answer it BEFORE the busy guard so
+        # a (possibly re-entrant) ping never touches the single-threaded
+        # _tool_busy flags. Going through the busy set/clear below would let a
+        # ping fired mid-tool clear an in-flight tool's guard and corrupt it.
+        if tool_name == "ping":
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": _tool_ping(tool_args)}]}}, 200
+
+        # Reject parallel tool calls — the server is single-threaded.
+        if _tool_busy:
+            err_msg = (
+                "Server busy: '{}' is currently running. "
+                "KLayout MCP server is single-threaded and cannot handle parallel tool calls. "
+                "Please wait for it to finish, then retry '{}'. "
+                "Hint: call tools sequentially, not in parallel."
+            ).format(_tool_busy_name, tool_name)
+            _log("BUSY: rejected '{}' while '{}' is running".format(tool_name, _tool_busy_name))
+            _notify_request("tools/call:" + tool_name, False, "server busy")
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": err_msg}], "isError": True}}, 200
+
+        _tool_busy = True
+        _tool_busy_name = tool_name
+        try:
+            result_str = handler(tool_args)
+            _notify_request("tools/call:" + tool_name, True)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": result_str}]}}, 200
+        except Exception as e:
+            # Return tool errors as MCP results with isError=true so
+            # the client can display them as readable tool output
+            tb_str = _tb_mod.format_exc()
+            _log("Tool error: {} — {}\n{}".format(tool_name, e, tb_str))
+            _notify_request("tools/call:" + tool_name, False, str(e))
+            # Build a human-readable error message
+            err_parts = ["Tool '{}' failed: {}".format(tool_name, e)]
+            # For execute_script, the RuntimeError already has user-code context
+            # For other tools, add a short traceback hint
+            if tool_name != "execute_script":
+                # Include the last few relevant traceback lines
+                tb_lines = tb_str.strip().split("\n")
+                if len(tb_lines) &gt; 2:
+                    err_parts.append("Traceback (last 3 lines):")
+                    for tl in tb_lines[-3:]:
+                        err_parts.append("  " + tl)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": "\n".join(err_parts)}], "isError": True}}, 200
+        finally:
+            _tool_busy = False
+            _tool_busy_name = None
+
+    # --- unknown method ---
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found: {}".format(method)}}, 200
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _http_response(status_code, body_str, extra_headers=None):
+    """Build a complete HTTP/1.0 response string."""
+    reason = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 500: "Internal Server Error"}.get(status_code, "Error")
+    headers = "HTTP/1.0 {} {}\r\n".format(status_code, reason)
+    headers += "Content-Type: application/json\r\n"
+    headers += "Connection: close\r\n"
+    if _session_id:
+        headers += "Mcp-Session-Id: {}\r\n".format(_session_id)
+    if extra_headers:
+        for k, v in extra_headers.items():
+            headers += "{}: {}\r\n".format(k, v)
+    body_bytes = body_str.encode("utf-8") if body_str else b""
+    headers += "Content-Length: {}\r\n".format(len(body_bytes))
+    headers += "\r\n"
+    return headers.encode("utf-8") + body_bytes
+
+
+# ---------------------------------------------------------------------------
+# QTcpServer subclass
+# ---------------------------------------------------------------------------
+
+DEFAULT_MCP_BIND = "127.0.0.1"
+DEFAULT_MCP_PORT = 8765
+DEFAULT_MCP_ENDPOINT = "/mcp"
+DEFAULT_MCP_CONFIG_PATH = os.path.expanduser("~/.klayout/klayoutclaw.json")
+
+
+def _load_mcp_server_config(environ=None, config_path=None):
+    """Load the optional per-user KlayoutClaw server configuration."""
+    if environ is None:
+        environ = os.environ
+    path = os.path.expanduser(
+        config_path
+        or environ.get("KLAYOUT_MCP_CONFIG", DEFAULT_MCP_CONFIG_PATH)
+    )
+    if not os.path.exists(path):
+        return path, {}
+    try:
+        with open(path, encoding="utf-8") as config_file:
+            data = json.load(config_file)
+    except (OSError, ValueError) as ex:
+        raise ValueError("Invalid JSON in {}: {}".format(path, ex))
+    if not isinstance(data, dict):
+        raise ValueError("{} must contain a JSON object".format(path))
+    settings = data.get("mcp", data)
+    if not isinstance(settings, dict):
+        raise ValueError("{}.mcp must be a JSON object".format(path))
+    return path, settings
+
+
+def _parse_bool_setting(value, name):
+    """Parse a JSON/environment boolean without Python truthiness surprises."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+    raise ValueError("{} must be true or false; got {!r}".format(name, value))
+
+
+def _normalize_mcp_endpoint(value):
+    """Validate an endpoint path suitable for exact HTTP request routing."""
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValueError("KLAYOUT_MCP_ENDPOINT must start with '/'; got {!r}".format(value))
+    if (
+        not value
+        or "?" in value
+        or "#" in value
+        or any(character.isspace() for character in value)
+    ):
+        raise ValueError(
+            "KLAYOUT_MCP_ENDPOINT must be a path without whitespace, query, or fragment; "
+            "got {!r}".format(value)
+        )
+    return value
+
+
+def _resolve_mcp_port(environ=None, config=None):
+    """Resolve and validate the KLayout listener port."""
+    if environ is None:
+        environ = os.environ
+    if config is None:
+        config = {}
+    raw_port = environ.get("KLAYOUT_MCP_PORT", config.get("port", DEFAULT_MCP_PORT))
+    if isinstance(raw_port, bool):
+        raise ValueError(
+            "KLAYOUT_MCP_PORT must be an integer from 1 to 65535; got {!r}".format(raw_port)
+        )
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "KLAYOUT_MCP_PORT must be an integer from 1 to 65535; got {!r}".format(raw_port)
+        )
+    if port &lt; 1 or port &gt; 65535:
+        raise ValueError(
+            "KLAYOUT_MCP_PORT must be an integer from 1 to 65535; got {!r}".format(raw_port)
+        )
+    return port
+
+
+def _resolve_mcp_settings(environ=None, config_path=None):
+    """Resolve server settings with environment values overriding the user file."""
+    if environ is None:
+        environ = os.environ
+    resolved_path, config = _load_mcp_server_config(environ, config_path)
+    bind = environ.get("KLAYOUT_MCP_BIND", config.get("bind", DEFAULT_MCP_BIND))
+    if not isinstance(bind, str) or not bind.strip():
+        raise ValueError("KLAYOUT_MCP_BIND must be a non-empty hostname or address")
+    bind = bind.strip()
+    port = _resolve_mcp_port(environ, config)
+    endpoint = _normalize_mcp_endpoint(
+        environ.get("KLAYOUT_MCP_ENDPOINT", config.get("endpoint", DEFAULT_MCP_ENDPOINT))
+    )
+    tls_enabled = _parse_bool_setting(
+        environ.get("KLAYOUT_MCP_TLS", config.get("tls", False)),
+        "KLAYOUT_MCP_TLS",
+    )
+    certificate = environ.get(
+        "KLAYOUT_MCP_TLS_CERT", config.get("certificate", "")
+    )
+    private_key = environ.get(
+        "KLAYOUT_MCP_TLS_KEY", config.get("private_key", "")
+    )
+    key_algorithm = environ.get(
+        "KLAYOUT_MCP_TLS_KEY_ALGORITHM", config.get("key_algorithm", "rsa")
+    )
+    private_key_passphrase = environ.get(
+        "KLAYOUT_MCP_TLS_KEY_PASSPHRASE",
+        config.get("private_key_passphrase", ""),
+    )
+    if not isinstance(key_algorithm, str) or key_algorithm.lower() not in ("rsa", "ec"):
+        raise ValueError("KLAYOUT_MCP_TLS_KEY_ALGORITHM must be 'rsa' or 'ec'")
+    if certificate:
+        certificate = os.path.expanduser(str(certificate))
+    if private_key:
+        private_key = os.path.expanduser(str(private_key))
+    return {
+        "bind": bind,
+        "port": port,
+        "endpoint": endpoint,
+        "tls": tls_enabled,
+        "certificate": certificate,
+        "private_key": private_key,
+        "key_algorithm": key_algorithm.lower(),
+        "private_key_passphrase": str(private_key_passphrase),
+        "config_path": resolved_path,
+    }
+
+
+class KlayoutClawServer(pya.QTcpServer):
+
+    def __init__(self, parent=None):
+        super(KlayoutClawServer, self).__init__(parent)
+        self.started = False
+        self.port = None
+        self.endpoint = None
+        self.tls_enabled = False
+        self.tls_certificate = None
+        self.tls_private_key = None
+        self.tls_key_algorithm = "rsa"
+        self.tls_private_key_passphrase = ""
+        self.startup_error = None
+        cb = sys.modules.get("_klayoutclaw")
+        if cb:
+            cb.server_port = None
+            cb.startup_error = None
+
+        try:
+            settings = _resolve_mcp_settings()
+        except ValueError as ex:
+            self.startup_error = "ERROR: {}".format(ex)
+            if cb:
+                cb.startup_error = self.startup_error
+            _log(self.startup_error)
+            return
+
+        _bind_addr = settings["bind"]
+        port = settings["port"]
+        self.endpoint = settings["endpoint"]
+        self.tls_enabled = settings["tls"]
+        self.tls_certificate = settings["certificate"]
+        self.tls_private_key = settings["private_key"]
+        self.tls_key_algorithm = settings["key_algorithm"]
+        self.tls_private_key_passphrase = settings["private_key_passphrase"]
+
+        if self.tls_enabled:
+            tls_error = self._validate_tls_settings()
+            if tls_error:
+                self.startup_error = "ERROR: {}".format(tls_error)
+                if cb:
+                    cb.startup_error = self.startup_error
+                _log(self.startup_error)
+                return
+
+        ha = pya.QHostAddress(_bind_addr)
+        ok = self.listen(ha, port)
+        if not ok:
+            self.startup_error = (
+                "ERROR: Failed to bind to {}:{} - port may be in use. "
+                "Set a free port in {} or KLAYOUT_MCP_PORT, then configure clients "
+                "with the matching endpoint or KLAYOUT_MCP_URL."
+                .format(_bind_addr, port, settings["config_path"])
+            )
+            if cb:
+                cb.startup_error = self.startup_error
+            _log(self.startup_error)
+            return
+
+        self.started = True
+        self.port = port
+        scheme = "https" if self.tls_enabled else "http"
+        _log("MCP server listening on {}://{}:{}{}".format(
+            scheme, _bind_addr, port, self.endpoint
+        ))
+        if cb:
+            cb.server_port = port
+            cb.startup_error = None
+            if cb.on_server_start:
+                cb.on_server_start(port)
+        if not self.tls_enabled:
+            self.newConnection(self.on_new_connection)
+
+    def _validate_tls_settings(self):
+        """Return a startup diagnostic when TLS cannot be served safely."""
+        if not hasattr(pya, "QSslSocket") or not pya.QSslSocket.supportsSsl():
+            return "TLS requested, but this KLayout Qt build has no SSL support"
+        if not self.tls_certificate:
+            return "TLS requested, but no certificate was configured"
+        if not self.tls_private_key:
+            return "TLS requested, but no private_key was configured"
+        if not os.path.isfile(self.tls_certificate):
+            return "TLS certificate does not exist: {}".format(self.tls_certificate)
+        if not os.path.isfile(self.tls_private_key):
+            return "TLS private key does not exist: {}".format(self.tls_private_key)
+        return None
+
+    def incomingConnection(self, socket_descriptor):
+        """Wrap accepted sockets in QSslSocket when TLS is configured."""
+        if not self.tls_enabled:
+            super(KlayoutClawServer, self).incomingConnection(socket_descriptor)
+            return
+        connection = None
+        try:
+            connection = pya.QSslSocket(self)
+            connection.setLocalCertificate(self.tls_certificate, pya.QSsl.Pem)
+            algorithm = pya.QSsl.Ec if self.tls_key_algorithm == "ec" else pya.QSsl.Rsa
+            connection.setPrivateKey(
+                self.tls_private_key,
+                algorithm,
+                pya.QSsl.Pem,
+                self.tls_private_key_passphrase.encode("utf-8"),
+            )
+            attached = connection.setSocketDescriptor(
+                socket_descriptor,
+                pya.QAbstractSocket.ConnectedState,
+                pya.QIODevice.ReadWrite,
+            )
+            if not attached:
+                raise RuntimeError("could not attach accepted socket descriptor")
+            connection.startServerEncryption()
+            if not connection.waitForEncrypted(5000):
+                errors = ", ".join(str(error) for error in connection.sslErrors())
+                raise RuntimeError("TLS handshake failed{}".format(
+                    ": " + errors if errors else ""
+                ))
+            self._handle_request(connection)
+        except Exception as ex:
+            _log("ERROR accepting TLS connection: {}".format(ex))
+            if connection is not None:
+                try:
+                    connection.disconnectFromHost()
+                    connection.deleteLater()
+                except Exception:
+                    pass
+
+    def on_new_connection(self):
+        try:
+            connection = self.nextPendingConnection()
+            self._handle_request(connection)
+        except Exception as ex:
+            _log("ERROR in on_new_connection: " + str(ex))
+
+    def _handle_request(self, conn):
+        try:
+            # --- Read HTTP request line and headers ---
+            method = None
+            path = None
+            content_length = 0
+            chunked = False
+            headers_done = False
+            session_header = None
+
+            while conn.isOpen() and conn.state() == pya.QTcpSocket.ConnectedState:
+                if conn.canReadLine():
+                    raw = conn.readLine()
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if line == "":
+                        headers_done = True
+                        break
+                    if method is None:
+                        # Request line: METHOD /path HTTP/1.x
+                        m = re.match(r"^(GET|POST|PUT|DELETE|OPTIONS)\s+(\S+)\s+HTTP/", line)
+                        if m:
+                            method = m.group(1)
+                            path = m.group(2)
+                    else:
+                        # Header line
+                        hm = re.match(r"^([^:]+):\s*(.*)", line)
+                        if hm:
+                            hname = hm.group(1).lower()
+                            hval = hm.group(2).strip()
+                            if hname == "content-length":
+                                try:
+                                    content_length = int(hval)
+                                except ValueError:
+                                    pass
+                            elif hname == "transfer-encoding" and "chunked" in hval.lower():
+                                chunked = True
+                            elif hname == "mcp-session-id":
+                                session_header = hval
+                else:
+                    conn.waitForReadyRead(100)
+
+            if method is None:
+                conn.write(_http_response(400, json.dumps({"error": "Bad Request"})))
+                self._close_connection(conn)
+                return
+
+            _log("HTTP {} {}".format(method, path))
+
+            # Validate session if present
+            if session_header and _session_id and session_header != _session_id:
+                _log("WARNING: Session ID mismatch (got {}, expected {})".format(session_header, _session_id))
+
+            # Reject chunked
+            if chunked:
+                conn.write(_http_response(400, json.dumps({"error": "Chunked transfer encoding not supported"})))
+                self._close_connection(conn)
+                return
+
+            # Enforce max body size
+            if content_length &gt; MAX_BODY_SIZE:
+                conn.write(_http_response(413, json.dumps({"error": "Payload too large (max 1MB)"})))
+                self._close_connection(conn)
+                return
+
+            # --- Read body for POST ---
+            body = b""
+            if method == "POST" and content_length &gt; 0:
+                while len(body) &lt; content_length:
+                    if conn.bytesAvailable() &gt; 0:
+                        chunk = conn.read(content_length - len(body))
+                        if isinstance(chunk, bytes):
+                            body += chunk
+                        else:
+                            body += chunk.encode("utf-8")
+                    else:
+                        if not conn.waitForReadyRead(100):
+                            break
+
+            # --- Route ---
+            if method == "GET" and path == self.endpoint:
+                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.6"})
+                conn.write(_http_response(200, resp_body))
+
+            elif method == "POST" and path == self.endpoint:
+                body_str = body.decode("utf-8") if isinstance(body, bytes) else body
+                rpc_resp, status = _handle_jsonrpc(body_str)
+                if rpc_resp is not None:
+                    conn.write(_http_response(status, json.dumps(rpc_resp)))
+                else:
+                    # Notification — return 200 with empty JSON
+                    conn.write(_http_response(200, ""))
+
+            else:
+                conn.write(_http_response(404, json.dumps({"error": "Not Found"})))
+
+        except Exception as ex:
+            _log("ERROR handling request: " + str(ex))
+            try:
+                conn.write(_http_response(500, json.dumps({"error": "Internal server error"})))
+            except Exception:
+                pass
+
+        self._close_connection(conn)
+
+    def _close_connection(self, conn):
+        """Disconnect and schedule cleanup via signal/slot as in KLayout template."""
+        try:
+            if conn.bytesToWrite() &gt; 0:
+                conn.waitForBytesWritten(1000)
+            conn.disconnectFromHost()
+            signal = pya.qt_signal("disconnected()")
+            slot = pya.qt_slot("deleteLater()")
+            pya.QObject.connect(conn, signal, conn, slot)
+        except Exception as ex:
+            _log("ERROR closing connection: " + str(ex))
+
+
+# ---------------------------------------------------------------------------
+# Singleton startup
+# ---------------------------------------------------------------------------
+
+_server = None
+
+try:
+    with open(_early_log, "a", encoding="utf-8") as _f:
+        _f.write("CREATING SERVER...\n")
+    _server = KlayoutClawServer()
+    with open(_early_log, "a", encoding="utf-8") as _f:
+        if _server.started:
+            _f.write("SERVER CREATED OK on port {}\n".format(_server.port))
+        else:
+            _f.write("SERVER START FAILED: {}\n".format(
+                _server.startup_error or "unknown startup error"
+            ))
+except Exception as e:
+    import traceback
+    with open(_early_log, "a", encoding="utf-8") as _f:
+        _f.write("FATAL: {}\n{}\n".format(e, traceback.format_exc()))
+    _log("FATAL: Failed to create server: " + str(e))
+</text>
+</klayout-macro>

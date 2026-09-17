@@ -1,6 +1,6 @@
 """Tests for configurable MCP connection in mcp_client.py.
 
-Tests the fallback order: --mcp-config flag -> .mcp.json in CWD -> mcp_config.json in project root -> default.
+Tests the legacy fallbacks after the per-user server config is absent.
 """
 import json
 import os
@@ -19,9 +19,13 @@ import mcp_client
 
 
 @pytest.fixture(autouse=True)
-def reset_mcp_url():
-    """Reset MCP_URL to default before each test."""
+def reset_mcp_url(tmp_path, monkeypatch):
+    """Reset MCP_URL and isolate tests from the host's per-user config."""
     original = mcp_client.MCP_URL
+    monkeypatch.delenv("KLAYOUT_MCP_URL", raising=False)
+    monkeypatch.setenv(
+        "KLAYOUT_MCP_CONFIG", str(tmp_path / "missing-user-config.json")
+    )
     yield
     mcp_client.MCP_URL = original
 
@@ -105,14 +109,16 @@ class TestLoadMcpConfig:
         with pytest.raises((json.JSONDecodeError, ValueError)):
             mcp_client.load_mcp_config(str(bad_file))
 
-    def test_missing_klayoutclaw_key_raises(self, tmp_path):
-        """If config has mcpServers but no klayoutclaw entry, raise KeyError."""
+    def test_single_unknown_server_uses_fallback(self, tmp_path):
+        """A single server entry is unambiguous even under an unknown label."""
         cfg = {"mcpServers": {"other_server": {"url": "http://x:1/mcp"}}}
         cfg_file = tmp_path / "cfg.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        with pytest.raises(KeyError):
-            mcp_client.load_mcp_config(str(cfg_file))
+        url = mcp_client.load_mcp_config(str(cfg_file))
+
+        assert url == "http://x:1/mcp"
+        assert mcp_client.MCP_URL == "http://x:1/mcp"
 
 
 class TestCommitGdsCliFlag:

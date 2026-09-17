@@ -14,9 +14,10 @@ Usage:
 
 import sys
 import json
+import os
 import urllib.request
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 _req_id = 0
 _session_id = None
 

@@ -1,0 +1,142 @@
+name: Prepare Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Version, changelog, and tag
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): prepare v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Check out main with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.15"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Detect existing release tags
+        id: tags
+        shell: bash
+        run: |
+          if git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Calculate semantic version
+        if: steps.tags.outputs.present == 'true'
+        id: cliff-version
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4
+        with:
+          version: v2.14.1
+          config: cliff.toml
+          args: --bumped-version
+
+      - name: Resolve release version
+        id: version
+        env:
+          BUMPED_VERSION: ${{ steps.cliff-version.outputs.content }}
+          HAS_TAGS: ${{ steps.tags.outputs.present }}
+        shell: bash
+        run: |
+          current_version=$(python scripts/set_version.py --check)
+          if [[ "$HAS_TAGS" == "true" ]]; then
+            release_version=$(printf '%s' "$BUMPED_VERSION" | tr -d '[:space:]')
+            release_version="${release_version#v}"
+          else
+            release_version="$current_version"
+          fi
+          if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: $release_version" >&2
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/v$release_version"; then
+            echo "release_needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_needed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$release_version" >> "$GITHUB_OUTPUT"
+
+      - name: Synchronize release sources
+        if: steps.version.outputs.release_needed == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python scripts/set_version.py "$RELEASE_VERSION"
+          python scripts/sync_payload.py
+          python scripts/set_version.py --check "$RELEASE_VERSION"
+
+      - name: Generate changelog
+        if: steps.version.outputs.release_needed == 'true'
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4
+        with:
+          version: v2.14.1
+          config: cliff.toml
+          args: --tag v${{ steps.version.outputs.version }}
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Validate release state
+        if: steps.version.outputs.release_needed == 'true'
+        env:
+          PYTHONPATH: src
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python scripts/set_version.py --check "$RELEASE_VERSION"
+          uv run --isolated --no-project --with pytest --with numpy pytest -q packaging_tests tests/test_release_version.py
+          uv build --no-sources
+          uv run --isolated --no-project python scripts/validate_artifacts.py dist
+
+      - name: Commit and push annotated tag
+        if: steps.version.outputs.release_needed == 'true'
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          bot_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git add \
+            CHANGELOG.md \
+            pyproject.toml \
+            .claude-plugin/plugin.json \
+            .claude-plugin/marketplace.json \
+            plugin/klayoutclaw_server.lym \
+            scripts/sync_payload.py \
+            src/klayoutclaw/_version.py \
+            src/klayoutclaw/payload
+          git commit -m "chore(release): prepare v$RELEASE_VERSION"
+          git tag -a "v$RELEASE_VERSION" -m "KlayoutClaw v$RELEASE_VERSION"
+          git push origin HEAD:main "v$RELEASE_VERSION"

@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Live MCP end-to-end validation of the qb-opus48 feedback fixes.
 
-Runs against the REAL KLayout MCP server (127.0.0.1:8765) through the JSON-RPC
-protocol — the same path qlaybot uses. Validates the .lym + worker changes that
+Runs against the real KLayout MCP server selected by ``KLAYOUT_MCP_URL`` (or
+the default endpoint) through JSON-RPC — the same path qlaybot uses. Validates
+the .lym + worker changes that
 the unit tests can only check statically:
   #7  describe_checks introspection + unknown-arg rejection (server-side)
   #2  solidity check exposes raw_solidity + raw= in detail
@@ -19,11 +20,11 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_phase1_mcp import (  # noqa: E402
     mcp_call, tool_call, tool_call_raw, init_session, _mcp_available,
-    PYTHON_PATH,
+    MCP_URL, PYTHON_PATH,
 )
 
 pytestmark = pytest.mark.skipif(
-    not _mcp_available(), reason="KLayout MCP server not reachable at 127.0.0.1:8765")
+    not _mcp_available(), reason=f"KLayout MCP server not reachable at {MCP_URL}")
 
 
 @pytest.fixture(scope="module", autouse=True)

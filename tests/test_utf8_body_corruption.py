@@ -23,11 +23,12 @@ Usage:
 
 import sys
 import json
+import os
 import urllib.request
 import urllib.error
 import time
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 
 # ---------------------------------------------------------------------------

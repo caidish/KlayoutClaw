@@ -107,29 +107,17 @@ describe("Phase 5 VC tools — prefix wiring (unit)", () => {
 // Suite 2: Live-server integration test (skip-if-unreachable)
 // ---------------------------------------------------------------------------
 
-const MCP_URL = "http://127.0.0.1:8765/mcp";
+const MCP_URL = process.env.KLAYOUT_MCP_URL ?? "http://127.0.0.1:8765/mcp";
 
 async function probeKLayout(): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    const resp = await fetch(MCP_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 0,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-03-26",
-          capabilities: {},
-          clientInfo: { name: "phase5-vc-probe", version: "0.1" },
-        },
-      }),
-      signal: controller.signal,
-    });
+    const resp = await fetch(MCP_URL, { signal: controller.signal });
     clearTimeout(timer);
-    return resp.ok;
+    if (!resp.ok) return false;
+    const data = await resp.json() as { status?: unknown; server?: unknown };
+    return data.status === "ok" && data.server === "KlayoutClaw";
   } catch {
     return false;
   }
@@ -139,7 +127,7 @@ const klayoutReachable = await probeKLayout();
 
 if (!klayoutReachable) {
   console.log(
-    "Phase 5 VC live integration test skipped: KLayout MCP not reachable at :8765",
+    `Phase 5 VC live integration test skipped: KlayoutClaw MCP not reachable at ${MCP_URL}`,
   );
 }
 
