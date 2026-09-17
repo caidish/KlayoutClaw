@@ -465,17 +465,18 @@ def main():
     except Exception as exc:
         # Surface a concrete message for the most common misconfig: wrong
         # MCP URL (especially inside Docker where the agent forgot
-        # --mcp-config host.docker.internal:8765). Without this, the
+        # KLAYOUT_MCP_URL/--mcp-config). Without this, the
         # underlying urllib error is opaque and agents often retry with
         # the same bad config.
         print(
             f"ERROR: Could not connect to KLayout MCP server: {exc}\n"
-            f"  - If running inside Docker, pass --mcp-config pointing to "
-            f"host.docker.internal:8765.\n"
+            f"  - If running inside Docker, set KLAYOUT_MCP_URL or pass "
+            f"--mcp-config pointing to host.docker.internal:8765.\n"
             f"  - If running on the host, verify the KlayoutClaw plugin is "
             f"loaded (open /Applications/klayout.app).\n"
-            f"  - Verified MCP endpoints are searched in: .mcp.json (CWD), "
-            f"mcp_config.json (project root), then default 127.0.0.1:8765.",
+            f"  - MCP endpoints are resolved from KLAYOUT_MCP_URL, explicit "
+            f"--mcp-config, .mcp.json (CWD), mcp_config.json (project root), "
+            f"then default 127.0.0.1:8765.",
             file=sys.stderr)
         sys.exit(1)
 

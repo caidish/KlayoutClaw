@@ -39,6 +39,115 @@ Point any MCP client at `http://127.0.0.1:8765/mcp`:
 claude mcp add --transport http klayoutclaw http://127.0.0.1:8765/mcp
 ```
 
+Port `8765`, plaintext HTTP, and `/mcp` remain the compatibility defaults.
+`install.py` creates `~/.klayout/klayoutclaw.json` on first install and
+preserves it on later installs. For example, this keeps AnkiConnect on its
+conventional port `8765` and runs KlayoutClaw on `8766`:
+
+```json
+{
+  "schema": 1,
+  "mcp": {
+    "bind": "127.0.0.1",
+    "port": 8766,
+    "endpoint": "/mcp",
+    "tls": false,
+    "certificate": "",
+    "private_key": "",
+    "key_algorithm": "rsa"
+  }
+}
+```
+
+Fully quit and reopen KLayout after changing the file. Bundled Python skills
+read the same file and derive `http://127.0.0.1:8766/mcp`. External clients
+must still use the matching URL; for Claude Desktop:
+
+```bash
+launchctl setenv KLAYOUT_MCP_URL http://127.0.0.1:8766/mcp
+open /Applications/klayout.app
+
+export KLAYOUT_MCP_URL=http://127.0.0.1:8766/mcp
+python tests/test_connection.py
+claude mcp add --transport http klayoutclaw "$KLAYOUT_MCP_URL"
+```
+
+TLS is terminated by KLayout's Qt SSL socket rather than merely changing the
+advertised URL. Set `tls` to `true` and provide PEM files:
+
+```json
+{
+  "schema": 1,
+  "mcp": {
+    "bind": "127.0.0.1",
+    "port": 9443,
+    "endpoint": "/secure-mcp",
+    "tls": true,
+    "certificate": "~/.klayout/tls/klayoutclaw.crt",
+    "private_key": "~/.klayout/tls/klayoutclaw.key",
+    "key_algorithm": "rsa"
+  }
+}
+```
+
+Clients must trust the configured certificate and connect to
+`https://127.0.0.1:9443/secure-mcp`. TLS startup fails loudly when Qt lacks SSL
+support or either PEM file is missing. `key_algorithm` accepts `rsa` or `ec`.
+
+For the packaged `klayoutclaw-mcp` bridge, configuration resolves per field as
+CLI flags > environment > config file > defaults. Environment variables also
+override file values in the KLayout GUI server, which has no bridge CLI:
+
+| Config value | Environment override |
+|---|---|
+| config path | `KLAYOUT_MCP_CONFIG` |
+| complete client URL | `KLAYOUT_MCP_URL` |
+| `bind` | `KLAYOUT_MCP_BIND` |
+| `port` | `KLAYOUT_MCP_PORT` |
+| `endpoint` | `KLAYOUT_MCP_ENDPOINT` |
+| `tls` | `KLAYOUT_MCP_TLS` |
+| `certificate` | `KLAYOUT_MCP_TLS_CERT` |
+| `private_key` | `KLAYOUT_MCP_TLS_KEY` |
+| `key_algorithm` | `KLAYOUT_MCP_TLS_KEY_ALGORITHM` |
+
+`KLAYOUT_MCP_TLS_KEY_PASSPHRASE` supplies an optional private-key passphrase
+without requiring it to be stored in the JSON file.
+
+The bridge accepts `--url`, `--config`, `--bind`, `--port`, `--endpoint`, and
+`--tls`/`--no-tls`. Specific component flags can refine `--url`. To diagnose
+precedence without starting the stdio transport:
+
+```bash
+uvx --from klayoutclaw klayoutclaw-mcp --print-config
+uvx --from klayoutclaw klayoutclaw-mcp \
+  --config ~/.klayout/klayoutclaw.json --port 8766 --print-config
+```
+
+The output contains only the effective endpoint and source of each value; it
+does not expose certificate, private-key, or passphrase settings. New user
+configs include `"schema": 1`; legacy files without a schema remain valid.
+
+The marketplace plugin's `.mcp.json` launches the packaged pure-Python bridge
+with `uvx --from klayoutclaw klayoutclaw-mcp`. The bridge reads
+`KLAYOUT_MCP_URL`, then `KLAYOUT_MCP_CONFIG`, then
+`~/.klayout/klayoutclaw.json`, and finally uses the compatibility default. It
+forwards Claude Desktop's stdio MCP messages to KLayout's HTTP endpoint without
+requiring Node.js or `mcp-remote`. Restarting Desktop after `launchctl setenv`
+redirects the installed plugin without editing its cached files. Update any
+separately registered MCP entry rather than adding a duplicate. To restore the
+file-derived client endpoint, unset the URL override and restart Claude
+Desktop:
+
+```bash
+launchctl unsetenv KLAYOUT_MCP_URL
+```
+
+If the connection test reports that another service answered, inspect the
+listener with `lsof -nP -iTCP:8765 -sTCP:LISTEN`. AnkiConnect commonly owns
+that port. KlayoutClaw never scans for another port or stops the conflicting
+process; select a port in `~/.klayout/klayoutclaw.json` (or with
+`KLAYOUT_MCP_PORT`) and point external clients at the matching URL.
+
 Then just ask:
 
 > *"Create a Hall bar with a 100×25 µm graphene channel, 6 side probes, and bonding pads. Save as hallbar.gds."*

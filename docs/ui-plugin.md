@@ -10,8 +10,9 @@ Shows the MCP server state:
 
 | State | Display | Color |
 |-------|---------|-------|
-| Running | `MCP: Running ● :8765` | Green |
-| Error | `MCP: Error ●` | Red (reverts to green after 5s) |
+| Running | `MCP: Running ● :<actual-port>` | Green |
+| Request error | `MCP: Error ●` | Red (reverts to green after 5s) |
+| Startup error | `MCP: Error ●` | Red until the server starts successfully |
 | Stopped | `MCP: Stopped ●` | Gray |
 
 ### Command History Dock Panel (bottom)
@@ -36,7 +37,16 @@ Server started on port 8765
 python install.py
 ```
 
-This copies both `klayoutclaw_server.lym` and `klayoutclaw_ui.lym` to `~/.klayout/pymacros/`. Restart KLayout to activate.
+This copies both `klayoutclaw_server.lym` and `klayoutclaw_ui.lym` to
+`~/.klayout/pymacros/` and creates `~/.klayout/klayoutclaw.json` when it does
+not already exist. Restart KLayout to activate.
+
+The listener defaults to `http://127.0.0.1:8765/mcp`. The per-user JSON file
+configures `bind`, `port`, `endpoint`, `tls`, `certificate`, `private_key`, and
+`key_algorithm`. Environment variables override those values. Configure
+external clients with the matching `KLAYOUT_MCP_URL`. This is useful when
+AnkiConnect already owns port 8765. A bind or TLS startup failure remains red
+in the UI and includes the diagnostic in the command-history panel.
 
 ## Architecture
 
@@ -57,7 +67,8 @@ Server macro (loads first, alphabetically "s" < "u")
       ├── on_request = None
       ├── on_server_start = None
       ├── on_error = None
-      └── server_port = None
+      ├── server_port = None
+      └── startup_error = None
 
 UI macro (loads second)
   └── Registers handler functions into the callback slots

@@ -25,7 +25,9 @@ import time
 import urllib.request
 import pytest
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+from mcp_identity import is_klayoutclaw
+
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 
 
 def _mcp_call(method, params=None, sid=None, timeout=60):
@@ -46,19 +48,8 @@ def _mcp_call(method, params=None, sid=None, timeout=60):
 
 
 def _require_server_up():
-    try:
-        req = urllib.request.Request(
-            MCP_URL,
-            data=json.dumps({"jsonrpc": "2.0", "id": 0,
-                             "method": "initialize",
-                             "params": {"protocolVersion": "2025-03-26",
-                                        "capabilities": {},
-                                        "clientInfo": {"name": "probe", "version": "0"}}}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST")
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        pytest.skip(f"KLayout MCP not reachable at {MCP_URL}: {e}")
+    if not is_klayoutclaw(MCP_URL, timeout=5):
+        pytest.skip(f"KlayoutClaw MCP not reachable at {MCP_URL}")
 
 
 def _exec(sid, code, timeout=180):

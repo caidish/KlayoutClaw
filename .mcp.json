@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "klayoutclaw": {
-      "command": "npx",
+      "command": "uvx",
       "args": [
-        "mcp-remote",
-        "http://127.0.0.1:8765/mcp",
-        "--allow-http"
+        "--from",
+        "klayoutclaw",
+        "klayoutclaw-mcp"
       ]
     }
   }

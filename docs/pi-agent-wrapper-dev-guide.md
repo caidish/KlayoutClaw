@@ -458,7 +458,7 @@ npm start -- --mode rpc    # RPC mode (E2E testing)
 ## 11. Integration Requirements
 
 ### Prerequisites
-- KLayout running with KlayoutClaw plugin (port 8765) — **required** (auto-launched if not running)
+- KLayout running with KlayoutClaw plugin (`KLAYOUT_MCP_URL`, default port 8765) — **required** (auto-launched if not running)
 - conda env `base` with: numpy, scipy, scikit-image, opencv
 
 ### Startup Behavior

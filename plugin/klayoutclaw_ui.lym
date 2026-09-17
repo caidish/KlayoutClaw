@@ -98,6 +98,7 @@ def _setup_ui():
         _claw_cb.on_server_start = None
         _claw_cb.on_error = None
         _claw_cb.server_port = None
+        _claw_cb.startup_error = None
         sys.modules["_klayoutclaw"] = _claw_cb
 
     cb = sys.modules["_klayoutclaw"]
@@ -108,20 +109,28 @@ def _setup_ui():
     # Check if server already started (server loads before UI alphabetically)
     if cb.server_port is not None:
         _on_server_start(cb.server_port)
+    elif getattr(cb, "startup_error", None):
+        _on_error(cb.startup_error)
 
     _install_vc_ui(mw)
 
 
 def _set_status_running():
     global _ui_status, _ui_timer
-    if _ui_status:
-        _ui_status.setText("MCP: Running \u25cf :8765")
+    cb = sys.modules.get("_klayoutclaw")
+    port = getattr(cb, "server_port", None) if cb else None
+    if _ui_status and port is not None:
+        _ui_status.setText("MCP: Running \u25cf :{}".format(port))
         _ui_status.setStyleSheet("QLabel { color: green; padding: 0 8px; }")
     if _ui_timer:
         _ui_timer.stop()
 
 
 def _on_server_start(port):
+    cb = sys.modules.get("_klayoutclaw")
+    if cb:
+        cb.server_port = port
+        cb.startup_error = None
     _set_status_running()
     _append_log("Server started on port {}".format(port), True)
 
@@ -143,7 +152,11 @@ def _on_error(error_msg):
         if _ui_status:
             _ui_status.setText("MCP: Error \u25cf")
             _ui_status.setStyleSheet("QLabel { color: red; padding: 0 8px; }")
-            if _ui_timer:
+            cb = sys.modules.get("_klayoutclaw")
+            # Request errors are transient while the listener remains live.
+            # Startup failures have no port and must stay red until a genuine
+            # on_server_start callback occurs.
+            if _ui_timer and cb and cb.server_port is not None:
                 _ui_timer.stop()
                 _ui_timer.start(5000)
         ts = datetime.datetime.now().strftime("%H:%M:%S")

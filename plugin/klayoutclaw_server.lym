@@ -30,15 +30,15 @@ if hasattr(sys.stderr, 'buffer'):
 
 # Early log to verify macro execution
 _early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
-with open(_early_log, "a") as _f:
+with open(_early_log, "a", encoding="utf-8") as _f:
     _f.write("MACRO STARTED (v0.6 QTcpServer)\n")
 
 try:
     import pya
-    with open(_early_log, "a") as _f:
+    with open(_early_log, "a", encoding="utf-8") as _f:
         _f.write("PYA IMPORTED\n")
 except Exception as _e:
-    with open(_early_log, "a") as _f:
+    with open(_early_log, "a", encoding="utf-8") as _f:
         _f.write("PYA IMPORT FAILED: {}\n".format(_e))
 
 import json
@@ -47,7 +47,7 @@ import uuid
 import datetime
 import traceback as _tb_mod
 
-with open(_early_log, "a") as _f:
+with open(_early_log, "a", encoding="utf-8") as _f:
     _f.write("ALL IMPORTS OK\n")
 
 # ---------------------------------------------------------------------------
@@ -89,6 +89,7 @@ if "_klayoutclaw" not in sys.modules:
     _claw_cb.on_server_start = None  # fn(port)
     _claw_cb.on_error = None         # fn(error_msg)
     _claw_cb.server_port = None      # int, set when server starts
+    _claw_cb.startup_error = None    # str, persisted when startup fails
     sys.modules["_klayoutclaw"] = _claw_cb
 
 
@@ -2602,23 +2603,263 @@ def _http_response(status_code, body_str, extra_headers=None):
 # QTcpServer subclass
 # ---------------------------------------------------------------------------
 
+DEFAULT_MCP_BIND = "127.0.0.1"
+DEFAULT_MCP_PORT = 8765
+DEFAULT_MCP_ENDPOINT = "/mcp"
+DEFAULT_MCP_CONFIG_PATH = os.path.expanduser("~/.klayout/klayoutclaw.json")
+
+
+def _load_mcp_server_config(environ=None, config_path=None):
+    """Load the optional per-user KlayoutClaw server configuration."""
+    if environ is None:
+        environ = os.environ
+    path = os.path.expanduser(
+        config_path
+        or environ.get("KLAYOUT_MCP_CONFIG", DEFAULT_MCP_CONFIG_PATH)
+    )
+    if not os.path.exists(path):
+        return path, {}
+    try:
+        with open(path, encoding="utf-8") as config_file:
+            data = json.load(config_file)
+    except (OSError, ValueError) as ex:
+        raise ValueError("Invalid JSON in {}: {}".format(path, ex))
+    if not isinstance(data, dict):
+        raise ValueError("{} must contain a JSON object".format(path))
+    settings = data.get("mcp", data)
+    if not isinstance(settings, dict):
+        raise ValueError("{}.mcp must be a JSON object".format(path))
+    return path, settings
+
+
+def _parse_bool_setting(value, name):
+    """Parse a JSON/environment boolean without Python truthiness surprises."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+    raise ValueError("{} must be true or false; got {!r}".format(name, value))
+
+
+def _normalize_mcp_endpoint(value):
+    """Validate an endpoint path suitable for exact HTTP request routing."""
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValueError("KLAYOUT_MCP_ENDPOINT must start with '/'; got {!r}".format(value))
+    if (
+        not value
+        or "?" in value
+        or "#" in value
+        or any(character.isspace() for character in value)
+    ):
+        raise ValueError(
+            "KLAYOUT_MCP_ENDPOINT must be a path without whitespace, query, or fragment; "
+            "got {!r}".format(value)
+        )
+    return value
+
+
+def _resolve_mcp_port(environ=None, config=None):
+    """Resolve and validate the KLayout listener port."""
+    if environ is None:
+        environ = os.environ
+    if config is None:
+        config = {}
+    raw_port = environ.get("KLAYOUT_MCP_PORT", config.get("port", DEFAULT_MCP_PORT))
+    if isinstance(raw_port, bool):
+        raise ValueError(
+            "KLAYOUT_MCP_PORT must be an integer from 1 to 65535; got {!r}".format(raw_port)
+        )
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "KLAYOUT_MCP_PORT must be an integer from 1 to 65535; got {!r}".format(raw_port)
+        )
+    if port &lt; 1 or port &gt; 65535:
+        raise ValueError(
+            "KLAYOUT_MCP_PORT must be an integer from 1 to 65535; got {!r}".format(raw_port)
+        )
+    return port
+
+
+def _resolve_mcp_settings(environ=None, config_path=None):
+    """Resolve server settings with environment values overriding the user file."""
+    if environ is None:
+        environ = os.environ
+    resolved_path, config = _load_mcp_server_config(environ, config_path)
+    bind = environ.get("KLAYOUT_MCP_BIND", config.get("bind", DEFAULT_MCP_BIND))
+    if not isinstance(bind, str) or not bind.strip():
+        raise ValueError("KLAYOUT_MCP_BIND must be a non-empty hostname or address")
+    bind = bind.strip()
+    port = _resolve_mcp_port(environ, config)
+    endpoint = _normalize_mcp_endpoint(
+        environ.get("KLAYOUT_MCP_ENDPOINT", config.get("endpoint", DEFAULT_MCP_ENDPOINT))
+    )
+    tls_enabled = _parse_bool_setting(
+        environ.get("KLAYOUT_MCP_TLS", config.get("tls", False)),
+        "KLAYOUT_MCP_TLS",
+    )
+    certificate = environ.get(
+        "KLAYOUT_MCP_TLS_CERT", config.get("certificate", "")
+    )
+    private_key = environ.get(
+        "KLAYOUT_MCP_TLS_KEY", config.get("private_key", "")
+    )
+    key_algorithm = environ.get(
+        "KLAYOUT_MCP_TLS_KEY_ALGORITHM", config.get("key_algorithm", "rsa")
+    )
+    private_key_passphrase = environ.get(
+        "KLAYOUT_MCP_TLS_KEY_PASSPHRASE",
+        config.get("private_key_passphrase", ""),
+    )
+    if not isinstance(key_algorithm, str) or key_algorithm.lower() not in ("rsa", "ec"):
+        raise ValueError("KLAYOUT_MCP_TLS_KEY_ALGORITHM must be 'rsa' or 'ec'")
+    if certificate:
+        certificate = os.path.expanduser(str(certificate))
+    if private_key:
+        private_key = os.path.expanduser(str(private_key))
+    return {
+        "bind": bind,
+        "port": port,
+        "endpoint": endpoint,
+        "tls": tls_enabled,
+        "certificate": certificate,
+        "private_key": private_key,
+        "key_algorithm": key_algorithm.lower(),
+        "private_key_passphrase": str(private_key_passphrase),
+        "config_path": resolved_path,
+    }
+
+
 class KlayoutClawServer(pya.QTcpServer):
 
     def __init__(self, parent=None):
         super(KlayoutClawServer, self).__init__(parent)
-        _bind_addr = os.environ.get("KLAYOUT_MCP_BIND", "127.0.0.1")
-        ha = pya.QHostAddress(_bind_addr)
-        ok = self.listen(ha, 8765)
-        if not ok:
-            _log("ERROR: Failed to bind to {}:8765 — port may be in use".format(_bind_addr))
-            return
-        _log("MCP server listening on {}:8765".format(_bind_addr))
+        self.started = False
+        self.port = None
+        self.endpoint = None
+        self.tls_enabled = False
+        self.tls_certificate = None
+        self.tls_private_key = None
+        self.tls_key_algorithm = "rsa"
+        self.tls_private_key_passphrase = ""
+        self.startup_error = None
         cb = sys.modules.get("_klayoutclaw")
         if cb:
-            cb.server_port = 8765
+            cb.server_port = None
+            cb.startup_error = None
+
+        try:
+            settings = _resolve_mcp_settings()
+        except ValueError as ex:
+            self.startup_error = "ERROR: {}".format(ex)
+            if cb:
+                cb.startup_error = self.startup_error
+            _log(self.startup_error)
+            return
+
+        _bind_addr = settings["bind"]
+        port = settings["port"]
+        self.endpoint = settings["endpoint"]
+        self.tls_enabled = settings["tls"]
+        self.tls_certificate = settings["certificate"]
+        self.tls_private_key = settings["private_key"]
+        self.tls_key_algorithm = settings["key_algorithm"]
+        self.tls_private_key_passphrase = settings["private_key_passphrase"]
+
+        if self.tls_enabled:
+            tls_error = self._validate_tls_settings()
+            if tls_error:
+                self.startup_error = "ERROR: {}".format(tls_error)
+                if cb:
+                    cb.startup_error = self.startup_error
+                _log(self.startup_error)
+                return
+
+        ha = pya.QHostAddress(_bind_addr)
+        ok = self.listen(ha, port)
+        if not ok:
+            self.startup_error = (
+                "ERROR: Failed to bind to {}:{} - port may be in use. "
+                "Set a free port in {} or KLAYOUT_MCP_PORT, then configure clients "
+                "with the matching endpoint or KLAYOUT_MCP_URL."
+                .format(_bind_addr, port, settings["config_path"])
+            )
+            if cb:
+                cb.startup_error = self.startup_error
+            _log(self.startup_error)
+            return
+
+        self.started = True
+        self.port = port
+        scheme = "https" if self.tls_enabled else "http"
+        _log("MCP server listening on {}://{}:{}{}".format(
+            scheme, _bind_addr, port, self.endpoint
+        ))
+        if cb:
+            cb.server_port = port
+            cb.startup_error = None
             if cb.on_server_start:
-                cb.on_server_start(8765)
-        self.newConnection(self.on_new_connection)
+                cb.on_server_start(port)
+        if not self.tls_enabled:
+            self.newConnection(self.on_new_connection)
+
+    def _validate_tls_settings(self):
+        """Return a startup diagnostic when TLS cannot be served safely."""
+        if not hasattr(pya, "QSslSocket") or not pya.QSslSocket.supportsSsl():
+            return "TLS requested, but this KLayout Qt build has no SSL support"
+        if not self.tls_certificate:
+            return "TLS requested, but no certificate was configured"
+        if not self.tls_private_key:
+            return "TLS requested, but no private_key was configured"
+        if not os.path.isfile(self.tls_certificate):
+            return "TLS certificate does not exist: {}".format(self.tls_certificate)
+        if not os.path.isfile(self.tls_private_key):
+            return "TLS private key does not exist: {}".format(self.tls_private_key)
+        return None
+
+    def incomingConnection(self, socket_descriptor):
+        """Wrap accepted sockets in QSslSocket when TLS is configured."""
+        if not self.tls_enabled:
+            super(KlayoutClawServer, self).incomingConnection(socket_descriptor)
+            return
+        connection = None
+        try:
+            connection = pya.QSslSocket(self)
+            connection.setLocalCertificate(self.tls_certificate, pya.QSsl.Pem)
+            algorithm = pya.QSsl.Ec if self.tls_key_algorithm == "ec" else pya.QSsl.Rsa
+            connection.setPrivateKey(
+                self.tls_private_key,
+                algorithm,
+                pya.QSsl.Pem,
+                self.tls_private_key_passphrase.encode("utf-8"),
+            )
+            attached = connection.setSocketDescriptor(
+                socket_descriptor,
+                pya.QAbstractSocket.ConnectedState,
+                pya.QIODevice.ReadWrite,
+            )
+            if not attached:
+                raise RuntimeError("could not attach accepted socket descriptor")
+            connection.startServerEncryption()
+            if not connection.waitForEncrypted(5000):
+                errors = ", ".join(str(error) for error in connection.sslErrors())
+                raise RuntimeError("TLS handshake failed{}".format(
+                    ": " + errors if errors else ""
+                ))
+            self._handle_request(connection)
+        except Exception as ex:
+            _log("ERROR accepting TLS connection: {}".format(ex))
+            if connection is not None:
+                try:
+                    connection.disconnectFromHost()
+                    connection.deleteLater()
+                except Exception:
+                    pass
 
     def on_new_connection(self):
         try:
@@ -2706,11 +2947,11 @@ class KlayoutClawServer(pya.QTcpServer):
                             break
 
             # --- Route ---
-            if method == "GET" and path == "/mcp":
+            if method == "GET" and path == self.endpoint:
                 resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.6"})
                 conn.write(_http_response(200, resp_body))
 
-            elif method == "POST" and path == "/mcp":
+            elif method == "POST" and path == self.endpoint:
                 body_str = body.decode("utf-8") if isinstance(body, bytes) else body
                 rpc_resp, status = _handle_jsonrpc(body_str)
                 if rpc_resp is not None:
@@ -2734,6 +2975,8 @@ class KlayoutClawServer(pya.QTcpServer):
     def _close_connection(self, conn):
         """Disconnect and schedule cleanup via signal/slot as in KLayout template."""
         try:
+            if conn.bytesToWrite() &gt; 0:
+                conn.waitForBytesWritten(1000)
             conn.disconnectFromHost()
             signal = pya.qt_signal("disconnected()")
             slot = pya.qt_slot("deleteLater()")
@@ -2749,14 +2992,19 @@ class KlayoutClawServer(pya.QTcpServer):
 _server = None
 
 try:
-    with open(_early_log, "a") as _f:
+    with open(_early_log, "a", encoding="utf-8") as _f:
         _f.write("CREATING SERVER...\n")
     _server = KlayoutClawServer()
-    with open(_early_log, "a") as _f:
-        _f.write("SERVER CREATED OK\n")
+    with open(_early_log, "a", encoding="utf-8") as _f:
+        if _server.started:
+            _f.write("SERVER CREATED OK on port {}\n".format(_server.port))
+        else:
+            _f.write("SERVER START FAILED: {}\n".format(
+                _server.startup_error or "unknown startup error"
+            ))
 except Exception as e:
     import traceback
-    with open(_early_log, "a") as _f:
+    with open(_early_log, "a", encoding="utf-8") as _f:
         _f.write("FATAL: {}\n{}\n".format(e, traceback.format_exc()))
     _log("FATAL: Failed to create server: " + str(e))
 </text>

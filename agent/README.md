@@ -140,7 +140,7 @@ qlaybot v0.4.3
   │   ├── Subagent: delegate (role-scoped, budgeted)
   │   └── Custom: memory_save, memory_search, background_status, background_result
   └── MCP Connections
-      ├── KLayout MCP :8765 [required, auto-launched with backoff]
+      ├── KLayout MCP (KLAYOUT_MCP_URL, default :8765) [required, auto-launched with backoff]
       └── (additional servers lazy-loaded via mcp.json)
 ```
 

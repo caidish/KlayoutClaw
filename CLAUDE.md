@@ -161,7 +161,7 @@ See `docs/tools.md` for full parameter schemas.
 - **pya Qt property access**: use `mw.statusBar` NOT `mw.statusBar()` — pya exposes Qt getters as properties, calling them crashes with `'X_Native' object is not callable`
 - Cross-macro shared state: use `sys.modules["_klayoutclaw"]` — pya module attributes set during autorun don't persist
 - Install plugin: `python install.py` then restart KLayout
-- MCP client config: `mcp_config.json` (type: http, url: `http://127.0.0.1:8765/mcp`)
+- MCP client config defaults to `http://127.0.0.1:8765/mcp`; active clients honor `KLAYOUT_MCP_URL`
 - Test scripts use absolute paths for GDS output — KLayout's CWD is `/`, so relative paths fail
 - `auto_route` subprocess needs `route_worker.py` — searched in `~/Documents/GitHub/KlayoutClaw/tools/` and `~/.klayout/pymacros/`
 - **`mw.create_layout(mode)` mode argument** — empirically determined (pya docs are misleading):

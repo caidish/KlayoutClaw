@@ -12,7 +12,7 @@ npm link   # Global CLI (optional)
 
 ## Architecture
 - Pi-Agent SDK wrapper with direct Agent + AgentSession construction
-- Custom KLayout MCP client (HTTP JSON-RPC on :8765)
+- Custom KLayout MCP client (HTTP JSON-RPC via `KLAYOUT_MCP_URL`, default `:8765`)
 - Domain tools generate pya code, executed via `execute_script`
 - Tool names use underscores (Anthropic API requirement): `klayout_geometry_add_rect`
 - Memory via SQLite FTS5 (better-sqlite3) with auto-recall transformContext hook + optional vector search and reranking
@@ -96,7 +96,7 @@ QLAYBOT_NIGHTLY=1 npm test       # Include 5g long session test
 QLAYBOT_E2E=0 npm test           # Skip E2E tests
 ```
 
-E2E tests need `ANTHROPIC_API_KEY` set + KLayout MCP at :8765.
+E2E tests need `ANTHROPIC_API_KEY` set + KLayout MCP at `KLAYOUT_MCP_URL` (default `:8765`).
 
 ### Test Suite (697 tests, 16 files)
 
@@ -125,7 +125,7 @@ E2E tests need `ANTHROPIC_API_KEY` set + KLayout MCP at :8765.
 ## Config
 - `ANTHROPIC_API_KEY` env var → apiKey for all providers
 - Runtime config at `~/.qlaybot/config/` (model.json, mcp.json, settings.json)
-- KLayout MCP at `http://127.0.0.1:8765/mcp`
+- KLayout MCP at `KLAYOUT_MCP_URL` (default `http://127.0.0.1:8765/mcp`)
 - Memory budget: `settings.json` → `memory.budget`
 - Compaction: `settings.json` → `compaction` (autoThreshold: 90%, warningThreshold: 70%, toolResultPruning)
 - Search (v0.4): `settings.json` → `search.mode`, `search.minRerank`, `search.rerankMinScore`, `search.rerankMaxTokens`
