@@ -6,7 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MCP_URL="http://127.0.0.1:8765/mcp"
+MCP_URL="${KLAYOUT_MCP_URL:-http://127.0.0.1:8765/mcp}"
+export KLAYOUT_MCP_URL="$MCP_URL"
 GDS_UNROUTED="/tmp/test_hallbar_unrouted.gds"
 GDS_ROUTED="/tmp/test_hallbar_routed.gds"
 PNG_ROUTED="/tmp/test_hallbar_routed.png"

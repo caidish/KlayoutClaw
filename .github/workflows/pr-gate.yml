@@ -1,0 +1,147 @@
+name: PR Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read # required by dependency-review-action
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.15"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Check Python
+        run: >-
+          uvx --from ruff==0.16.8 ruff check
+          --select E4,E7,E9,F
+          --exclude src/klayoutclaw/payload
+          install.py scripts packaging_tests src/klayoutclaw
+
+      - name: Check workflow syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+      - name: Check patch whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git diff --check "$BASE_SHA"...HEAD
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        if: github.event.repository.fork == false
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: moderate
+
+      - name: Explain dependency review limitation on forks
+        if: github.event.repository.fork
+        run: >-
+          echo "GitHub's dependency review API does not support fork repositories;
+          continuing with the resolved-dependency and source security scans."
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.15"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Resolve runtime dependencies
+        env:
+          AUDIT_REQUIREMENTS: ${{ runner.temp }}/klayoutclaw-requirements.txt
+        run: >-
+          uv pip compile pyproject.toml
+          --extra workers
+          --output-file "$AUDIT_REQUIREMENTS"
+
+      - name: Audit runtime dependencies
+        env:
+          AUDIT_REQUIREMENTS: ${{ runner.temp }}/klayoutclaw-requirements.txt
+        run: >-
+          uvx --from pip-audit==2.10.1 pip-audit
+          --strict
+          --requirement "$AUDIT_REQUIREMENTS"
+
+      - name: Scan Python for high-confidence findings
+        run: >-
+          uvx --from bandit==1.9.4 bandit
+          --recursive install.py scripts src/klayoutclaw
+          --exclude src/klayoutclaw/payload
+          --severity-level medium
+          --confidence-level high
+
+      - name: Audit GitHub Actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uvx --from zizmor==1.30.1 zizmor
+          --pedantic
+          .github/workflows
+
+  pytest:
+    name: PyTests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.15"
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Run unit and packaging tests
+        env:
+          PYTHONPATH: src
+        run: >-
+          uv run --isolated --no-project
+          --python 3.12
+          --with pytest
+          --with numpy
+          --with opencv-python-headless
+          pytest -q
+          packaging_tests
+          tests/test_install_config.py
+          tests/test_release_version.py
+          tests/test_mcp_port_contract.py
+          tests/test_mcp_client.py
+          tests/test_mcp_config.py
+          tests/test_connection_protocol.py
+          tests/test_server_bind.py
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Validate distributions
+        run: uv run --isolated --no-project python scripts/validate_artifacts.py dist

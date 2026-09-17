@@ -15,27 +15,20 @@ import urllib.error
 
 import pytest
 
+from mcp_identity import is_klayoutclaw
+
 # ---------------------------------------------------------------------------
 # MCP Client Helpers (same pattern as test_phase0_mcp.py)
 # ---------------------------------------------------------------------------
 
-MCP_URL = "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 _req_id = 0
 _session_id = None
 
 
 def _mcp_available():
     """Check if the KLayout MCP server is reachable."""
-    try:
-        payload = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "ping"}).encode()
-        req = urllib.request.Request(
-            MCP_URL, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2)
-        return True
-    except (urllib.error.URLError, OSError):
-        return False
+    return is_klayoutclaw(MCP_URL)
 
 
 def mcp_call(method, params=None, timeout=30):
@@ -101,7 +94,7 @@ _mcp_ok = _mcp_available()
 
 pytestmark = [
     pytest.mark.mcp,
-    pytest.mark.skipif(not _mcp_ok, reason="KLayout MCP server not reachable at 127.0.0.1:8765"),
+    pytest.mark.skipif(not _mcp_ok, reason=f"KLayout MCP server not reachable at {MCP_URL}"),
 ]
 
 

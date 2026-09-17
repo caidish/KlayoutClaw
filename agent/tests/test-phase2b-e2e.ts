@@ -8,7 +8,8 @@
  * persistence sinks (history JSONL and the verbose JSONL).
  *
  * Gated the same way as `test-e2e.ts`: ANTHROPIC_API_KEY + KLayout MCP at
- * :8765 + built dist/cli.js. Set `QLAYBOT_E2E=0` to force-skip.
+ * KLAYOUT_MCP_URL (default :8765) + built dist/cli.js. Set `QLAYBOT_E2E=0`
+ * to force-skip.
  *
  * Scoping decisions (documented per-test):
  *   - T3 is reduced to the headless-feasible surface (abandon path). The
@@ -34,6 +35,7 @@ import { createHash } from "crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = resolve(__dirname, "..", "dist", "cli.js");
+const KLAYOUT_MCP_URL = process.env.KLAYOUT_MCP_URL ?? "http://127.0.0.1:8765/mcp";
 
 // ---------------------------------------------------------------------------
 // Env gating — clone of test-e2e.ts pattern.
@@ -50,23 +52,11 @@ async function probeKLayout(): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    const resp = await fetch("http://127.0.0.1:8765/mcp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 0,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-03-26",
-          capabilities: {},
-          clientInfo: { name: "e2e-probe", version: "0.1" },
-        },
-      }),
-      signal: controller.signal,
-    });
+    const resp = await fetch(KLAYOUT_MCP_URL, { signal: controller.signal });
     clearTimeout(timer);
-    return resp.ok;
+    if (!resp.ok) return false;
+    const data = await resp.json() as { status?: unknown; server?: unknown };
+    return data.status === "ok" && data.server === "KlayoutClaw";
   } catch {
     return false;
   }
@@ -95,7 +85,7 @@ if (!E2E_ENABLED) {
   const reasons: string[] = [];
   if (!process.env.ANTHROPIC_API_KEY) reasons.push("ANTHROPIC_API_KEY not set");
   if (!existsSync(CLI_PATH)) reasons.push("dist/cli.js not built");
-  if (!klayoutReachable) reasons.push("KLayout MCP not reachable at :8765");
+  if (!klayoutReachable) reasons.push(`KlayoutClaw MCP not reachable at ${KLAYOUT_MCP_URL}`);
   if (process.env.QLAYBOT_E2E === "0") reasons.push("QLAYBOT_E2E=0");
   console.log(`Phase 2b E2E tests skipped: ${reasons.join(", ")}`);
 } else if (!rpcForwardingWired) {

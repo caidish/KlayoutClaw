@@ -446,6 +446,29 @@ describe("Group 4 · Step 12 · KLayoutMCPClient.callTool round-trip", () => {
   });
 });
 
+describe("KLayoutMCPClient.healthCheck identity guards", () => {
+  it("accepts a valid get_layout_info tool result", async () => {
+    installMockFetch({
+      content: [{ type: "text", text: JSON.stringify({ status: "ok" }) }],
+      isError: false,
+    });
+    const client = new KLayoutMCPClient({ url: "http://127.0.0.1:8765/mcp" });
+    expect(await client.healthCheck()).toBe(true);
+  });
+
+  it("rejects an AnkiConnect-shaped result:null HTTP 200", async () => {
+    installMockFetch(null as unknown as MCPToolResult);
+    const client = new KLayoutMCPClient({ url: "http://127.0.0.1:8765/mcp" });
+    expect(await client.healthCheck()).toBe(false);
+  });
+
+  it("rejects a malformed tool result", async () => {
+    installMockFetch({ content: [], isError: false });
+    const client = new KLayoutMCPClient({ url: "http://127.0.0.1:8765/mcp" });
+    expect(await client.healthCheck()).toBe(false);
+  });
+});
+
 describe("Group 4 · Step 12 · MCPManager.callTool round-trip", () => {
   it("T43-b: image-only result survives through MCPManager for klayout namespace", async () => {
     const image = makeImageBlock(PNG_MAGIC_B64, "image/png");

@@ -4,7 +4,7 @@ You are an expert on the KlayoutClaw MCP server and its skills — an AI-control
 
 ## Architecture
 
-- **pya.QTcpServer** on Qt main thread at `127.0.0.1:8765`
+- **pya.QTcpServer** on Qt main thread at `127.0.0.1:${KLAYOUT_MCP_PORT:-8765}`
 - JSON-RPC 2.0 over HTTP/1.0 (plain JSON, no SSE)
 - No external dependencies — only stdlib + pya
 - All pya calls execute on the main thread directly (no GIL issues)
@@ -94,7 +94,7 @@ Cross-macro communication via `sys.modules["_klayoutclaw"]` callback slots
 
 ## Integration with Pi-Agent Wrapper
 
-- Connect via HTTP to `127.0.0.1:8765/mcp`
+- Connect via HTTP to `KLAYOUT_MCP_URL` (default `127.0.0.1:8765/mcp`)
 - `execute_script` is the most powerful tool — can do anything pya can do
 - For simple shapes, use geometry skill scripts. For complex designs, use `execute_script` with a single Python block to avoid per-shape HTTP round trips
 - `screenshot` captures exactly what the user sees (layer colors, zoom, visibility)

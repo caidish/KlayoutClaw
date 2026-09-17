@@ -7,7 +7,9 @@ description: Create geometry in KLayout via MCP — rectangles, polygons, paths,
 
 CLI scripts for creating geometry in KLayout via the MCP server's `execute_script` tool.
 
-Each script connects to KLayout at `127.0.0.1:8765` and runs pya code to create shapes.
+Each script connects to KLayout at `127.0.0.1:8765` by default and runs pya
+code to create shapes. Set `KLAYOUT_MCP_URL` when the server uses a custom
+port.
 
 ## Prerequisites
 

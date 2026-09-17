@@ -9,7 +9,7 @@
 ## 1. Vision
 
 Build a minimal, physicist-thinking agent that orchestrates:
-- **KLayout MCP** (port 8765, required) — chip layout design, geometry, GDS operations
+- **KLayout MCP** (`KLAYOUT_MCP_URL`, default port 8765, required) — chip layout design, geometry, GDS operations
 
 Additional MCP servers can be added via config without code changes. All MCP tools are exposed directly (not proxied). Non-KLayout servers are registered but lazy-loaded — their tools are discovered and added to the tool registry on first call to that server, not included in the initial system prompt.
 
@@ -78,10 +78,13 @@ Minimal agent kernel (~4K lines):
 │                                                    │
 │  ┌──────────────┐  ┌──────────────────────┐       │
 │  │ KLayout MCP  │  │ (future MCP servers  │       │
-│  │ :8765 [REQ]  │  │  lazy-loaded)        │       │
+│  │ :8765* [REQ] │  │  lazy-loaded)        │       │
 │  └──────────────┘  └──────────────────────┘       │
 └──────────────────────────────────────────────────┘
 ```
+
+`*` The diagram shows the compatibility default; `KLAYOUT_MCP_URL` selects an
+alternate endpoint.
 
 ## 4. MCP Connection Management
 

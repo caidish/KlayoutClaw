@@ -1,6 +1,11 @@
 # KlayoutClaw MCP Tool Reference (v0.6)
 
-All tools are called via MCP `tools/call` method over HTTP POST to `http://127.0.0.1:8765/mcp`.
+All tools are called via MCP `tools/call` over HTTP POST. The default endpoint
+is `http://127.0.0.1:8765/mcp`. Configure the server's bind address, port,
+endpoint path, and optional TLS certificate in
+`~/.klayout/klayoutclaw.json`; restart KLayout after changing the file.
+Environment variables such as `KLAYOUT_MCP_PORT` override file values.
+External clients use the matching complete `KLAYOUT_MCP_URL`.
 
 All coordinates are in **microns**. The database unit (dbu) defaults to 0.001.
 

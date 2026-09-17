@@ -337,7 +337,7 @@ export async function createDesignSession(
   // --- Build system prompt ---
   const connectedServers: string[] = [];
   if (mcpManager.isConnected("klayout")) {
-    connectedServers.push("klayout (KLayout MCP :8765)");
+    connectedServers.push(`klayout (KLayout MCP ${config.klayout.url})`);
   }
 
   // Compute skillsDirs — search paths for SKILL.md files

@@ -195,7 +195,15 @@ export class KLayoutMCPClient {
         this.sessionId,
         5000,
       );
-      return true;
+      if (!result || typeof result !== "object" || result.isError || !Array.isArray(result.content)) {
+        return false;
+      }
+      const text = result.content.find(
+        (item) => item.type === "text" && typeof item.text === "string",
+      );
+      if (!text || text.type !== "text") return false;
+      const payload = JSON.parse(text.text) as { status?: unknown };
+      return payload.status === "ok";
     } catch {
       return false;
     }

@@ -102,7 +102,7 @@ Warps the microscope image and material contours into GDS coordinates using the 
 | `--gds` | Template GDS file (loaded into KLayout during commit) |
 | `--output-dir` | Optional output directory for warp results (default: current working directory). Set this to the agent's workspace directory to keep warp outputs scoped. Files written: `traces_gds.json`, `full_stack_gds.png`, `image_placement.json` |
 | `--warp-only` | Only produce warped files, skip KLayout commit |
-| `--mcp-config` | Path to MCP config JSON. Fallback chain: `.mcp.json` in CWD 鈫?`mcp_config.json` in project root 鈫?default `127.0.0.1:8765`. **In Docker**, pass a config pointing to `http://host.docker.internal:8765/mcp` |
+| `--mcp-config` | Path to MCP config JSON. Resolution order: `KLAYOUT_MCP_URL` 鈫?explicit config 鈫?`.mcp.json` in CWD 鈫?`mcp_config.json` in project root 鈫?default `127.0.0.1:8765`. **In Docker**, set `KLAYOUT_MCP_URL` or pass a config pointing to `http://host.docker.internal:8765/mcp` |
 | `--align-report` | Path to `gds_alignment_report.json` for the registration gate. Default: auto-located next to `--warp`. |
 | `--gds-markers` | Path to `gds_markers.json` for the marker-field frame check. Default: auto-located next to `--warp`. |
 | `--skip-registration-check` | **Escape hatch 鈥?strongly discouraged.** Bypasses the registration self-validation gate. Only for an intentional hand-built transform. |

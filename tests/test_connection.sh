@@ -5,7 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MCP_URL="http://127.0.0.1:8765/mcp"
+MCP_URL="${KLAYOUT_MCP_URL:-http://127.0.0.1:8765/mcp}"
+export KLAYOUT_MCP_URL="$MCP_URL"
 
 echo "============================================"
 echo "KlayoutClaw E2E Connection Test"
@@ -26,30 +27,14 @@ else
     echo "  KLayout launched."
 fi
 
-# Step 3: Wait for MCP server
+# Step 3: Wait for and authenticate the MCP server
 echo ""
-echo "Step 3: Waiting for MCP server..."
-MAX_WAIT=60
-WAITED=0
-while ! curl -sf "$MCP_URL" > /dev/null 2>&1; do
-    sleep 2
-    WAITED=$((WAITED + 2))
-    if [ "$WAITED" -ge "$MAX_WAIT" ]; then
-        echo "  ERROR: MCP server not responding after ${MAX_WAIT}s"
-        exit 1
-    fi
-    echo "  Waiting... (${WAITED}s)"
-done
-echo "  MCP server is ready!"
+echo "Step 3: Running authenticated protocol-level test..."
+python "$PROJECT_DIR/tests/test_connection.py" --wait-seconds 60
 
-# Step 4: Run protocol-level test
+# Step 4: Test with Claude CLI (optional, requires tmux)
 echo ""
-echo "Step 4: Running protocol-level test..."
-python "$PROJECT_DIR/tests/test_connection.py"
-
-# Step 5: Test with Claude CLI (optional, requires tmux)
-echo ""
-echo "Step 5: Claude CLI test (manual)"
+echo "Step 4: Claude CLI test (manual)"
 echo "  To test with Claude CLI, run:"
 echo "    claude mcp add klayoutclaw --type http --url $MCP_URL"
 echo "    claude 'Call the get_layout_info tool and tell me what you see'"

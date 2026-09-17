@@ -6,7 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MCP_URL="http://127.0.0.1:8765/mcp"
+MCP_URL="${KLAYOUT_MCP_URL:-http://127.0.0.1:8765/mcp}"
+export KLAYOUT_MCP_URL="$MCP_URL"
 RESULT_JSON="/tmp/e2e_route_override.json"
 DRYRUN_JSON="/tmp/e2e_route_override_dryrun.json"
 CLAUDE_LOG="/tmp/e2e_route_override.log"
@@ -127,8 +128,9 @@ assert sorted(dry_pairs) == [(0, 0), (1, 1)], (
 # override took effect. To further validate the geometry is crossed, query
 # the MCP for shapes on output_layer=10/0 and verify their endpoints span
 # the full y-range (not just the short y-slice default assignment would produce).
+import os
 import urllib.request
-MCP = "http://127.0.0.1:8765/mcp"
+MCP = os.environ.get("KLAYOUT_MCP_URL", "http://127.0.0.1:8765/mcp")
 code = """
 view, layout, cell = _get_or_create_view()
 li = layout.layer(10, 0)

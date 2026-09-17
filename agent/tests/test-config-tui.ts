@@ -1536,6 +1536,24 @@ describe("SCC-D18: Wizard accepts API key from env var", () => {
     expect(providers.length).toBeGreaterThan(0);
     expect(providers[0].apiKey).toBe("sk-ant-from-env-12345");
   });
+
+  it("runSetupWizard uses KLAYOUT_MCP_URL when no mcpUrl option is given", async () => {
+    const { runSetupWizard } = await importSetup();
+    const tmpDir = makeTmpDir();
+    const configDir = join(tmpDir, "config");
+    const templateDir = join(tmpDir, "templates");
+    mkdirSync(templateDir, { recursive: true });
+
+    const result = await runSetupWizard({
+      configDir,
+      templateDir,
+      apiKey: "sk-ant-test",
+      env: { KLAYOUT_MCP_URL: "http://127.0.0.1:8766/mcp" },
+      skipValidation: true,
+    });
+
+    expect(result.klayout.url).toBe("http://127.0.0.1:8766/mcp");
+  });
 });
 
 // --- D4: Model selection (SCC-D4) ---
@@ -1634,13 +1652,37 @@ describe("SCC-D14: Wizard with embedding creds auto-sets search mode", () => {
 // --- D6: detectKLayout HTTP health check (SCC-D5) ---
 
 describe("SCC-D5: detectKLayout auto-detects KLayout via HTTP", () => {
-  it("detectKLayout returns true when server responds", async () => {
+  it("detectKLayout uses KLAYOUT_MCP_URL when no URL is passed", async () => {
+    const { detectKLayout } = await importSetup();
+    const http = await import("http");
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", server: "KlayoutClaw", version: "0.6" }));
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const addr = server.address() as { port: number };
+    const previous = process.env.KLAYOUT_MCP_URL;
+    process.env.KLAYOUT_MCP_URL = `http://127.0.0.1:${addr.port}/mcp`;
+
+    try {
+      expect(await detectKLayout()).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.KLAYOUT_MCP_URL;
+      else process.env.KLAYOUT_MCP_URL = previous;
+      server.close();
+    }
+  });
+
+  it("detectKLayout returns true for the KlayoutClaw identity response", async () => {
     const { detectKLayout } = await importSetup();
     // Start a minimal HTTP server to simulate KLayout
     const http = await import("http");
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", result: {} }));
+      res.end(JSON.stringify({ status: "ok", server: "KlayoutClaw", version: "0.6" }));
     });
 
     await new Promise<void>((resolve) => {
@@ -1651,6 +1693,31 @@ describe("SCC-D5: detectKLayout auto-detects KLayout via HTTP", () => {
     try {
       const detected = await detectKLayout(`http://127.0.0.1:${addr.port}`);
       expect(detected).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it.each([
+    ["HTML response", "text/html", "<html>not KLayout</html>"],
+    ["empty JSON", "application/json", "{}"],
+    ["Anki-like JSON-RPC response", "application/json", JSON.stringify({ jsonrpc: "2.0", result: null })],
+    ["wrong server", "application/json", JSON.stringify({ status: "ok", server: "AnkiConnect" })],
+  ])("detectKLayout rejects an unrelated 200: %s", async (_name, contentType, body) => {
+    const { detectKLayout } = await importSetup();
+    const http = await import("http");
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(body);
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const addr = server.address() as { port: number };
+
+    try {
+      expect(await detectKLayout(`http://127.0.0.1:${addr.port}/mcp`)).toBe(false);
     } finally {
       server.close();
     }
