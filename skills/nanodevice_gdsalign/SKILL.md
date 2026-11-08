@@ -91,7 +91,7 @@ ${PYTHON_PATH:-conda run -n instrMCPdev python} skills/nanodevice_gdsalign/scrip
     --gds Template.gds --output-dir output/gdsalign/ [--warp-only]
 ```
 
-Warps the microscope image and material contours into GDS coordinates using the affine from `align_gds.py`. Without `--warp-only`, also loads the GDS template into KLayout, adds the warped image as a background overlay, and inserts material polygons on layers 10鈥?3.
+Warps the microscope image and material contours into GDS coordinates using the affine from `align_gds.py`. Without `--warp-only`, also loads the GDS template into KLayout, adds the warped image as a background overlay, and inserts material polygons. The default mapping is `top_hBN` to `10/0`, `graphene` to `11/0`, `bottom_hBN` to `12/0`, and `graphite` to `13/0`.
 
 | Flag | Description |
 |------|-------------|
@@ -102,12 +102,24 @@ Warps the microscope image and material contours into GDS coordinates using the 
 | `--gds` | Template GDS file (loaded into KLayout during commit) |
 | `--output-dir` | Optional output directory for warp results (default: current working directory). Set this to the agent's workspace directory to keep warp outputs scoped. Files written: `traces_gds.json`, `full_stack_gds.png`, `image_placement.json` |
 | `--warp-only` | Only produce warped files, skip KLayout commit |
+| `--material-layer-map` | Optional path to a JSON object mapping each trace role to a distinct `L/D` string. An explicit map replaces the default mapping. |
+| `--verify` | After insertion, verify that the expected material layers contain shapes. |
 | `--mcp-config` | Path to MCP config JSON. Fallback chain: `.mcp.json` in CWD 鈫?`mcp_config.json` in project root 鈫?default `127.0.0.1:8765`. **In Docker**, pass a config pointing to `http://host.docker.internal:8765/mcp` |
 | `--align-report` | Path to `gds_alignment_report.json` for the registration gate. Default: auto-located next to `--warp`. |
 | `--gds-markers` | Path to `gds_markers.json` for the marker-field frame check. Default: auto-located next to `--warp`. |
 | `--skip-registration-check` | **Escape hatch 鈥?strongly discouraged.** Bypasses the registration self-validation gate. Only for an intentional hand-built transform. |
 
 **Outputs**: `full_stack_gds.png`, `traces_gds.json`, `image_placement.json`
+
+When an explicit device SOP supplies a material map, save the map as a JSON
+file and pass `--material-layer-map <path> --verify`. For example,
+`{"top_graphite": "111/0", "bottom_graphite": "115/0"}` describes a
+two-role commit. Include every role in the traces and at least one image-frame
+`contour_um` polygon for each role in the map. The explicit path validates
+roles and pairs before opening the MCP connection and records the effective
+map in `traces_gds.json`. After loading the template it checks for zero-area
+contours on the layout grid before inserting the image or material polygons.
+Use distinct pairs that are free in the template.
 
 > ### 鈿狅笍 Validated-commit contract 鈥?commit flakes ONLY through `commit_gds.py`
 >
@@ -179,4 +191,5 @@ Use `validate_pixel_size` to confirm the value before running the alignment pipe
 |------|---------|
 | 0 | Success |
 | 1 | Error (missing file, insufficient markers, transform failure) |
+| 2 | Invalid command arguments or explicit material map, or material verification failure |
 | 3 | `commit_gds.py` registration self-validation failed (skipped/hand-rolled/off-frame transform) 鈥?fix the alignment, do not bypass |

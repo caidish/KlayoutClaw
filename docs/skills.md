@@ -526,6 +526,14 @@ Device-agnostic methodology for designing nanodevices on material regions in KLa
 
 This is a pure-text orchestrator skill with no scripts directory. The agent dispatches sub-skills and MCP tools at each step.
 
+Specify a device SOP in your task to use its material roles, design rules and
+release checks. The [general SOP](../skills/nanodevice_e2e_design/references/general-sop.md)
+provides the shared procedure. Copy the
+[dual-gate graphene Hall bar template](../skills/nanodevice_e2e_design/references/dual-gate-graphene-hall-bar.md)
+and fill in the stack and process requirements for your sample. If you omit
+both SOPs, the skill follows the existing pipeline below and `commit_gds.py`
+uses the original four material layers.
+
 ### Pipeline Steps
 1. QUERY — gather device type, material regions, layer assignments
 2. PREPARE — run flake detection + GDS alignment (optional, only if microscope images provided)

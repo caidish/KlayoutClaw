@@ -19,6 +19,7 @@ import copy
 import json
 import math
 import os
+import re
 import sys
 
 import cv2
@@ -35,6 +36,62 @@ LAYER_MAP = {
     "bottom_hBN": (12, 0),
     "graphite": (13, 0),
 }
+
+
+def _unique_json_keys(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError(f"duplicate material role {name!r}")
+        result[name] = value
+    return result
+
+
+def load_material_layer_map(path, materials):
+    """Validate an explicit device map and its traces before touching KLayout."""
+    with open(path, encoding="utf-8") as f:
+        specs = json.load(f, object_pairs_hook=_unique_json_keys)
+    if not isinstance(specs, dict) or not specs:
+        raise ValueError("expected a nonempty JSON object of material roles to 'L/D' strings")
+
+    layer_map = {}
+    used_layers = set()
+    for role, spec in specs.items():
+        if not role.strip() or not isinstance(spec, str) or not re.fullmatch(r"[0-9]+/[0-9]+", spec):
+            raise ValueError(f"expected a nonempty role and 'L/D' layer for {role!r}: {spec!r}")
+        layer, datatype = map(int, spec.split("/"))
+        if max(layer, datatype) > 65535:
+            raise ValueError(f"layer and datatype must be in 0–65535 for {role!r}")
+        if (layer, datatype) in used_layers:
+            raise ValueError(f"multiple material roles use layer {layer}/{datatype}")
+        layer_map[role] = (layer, datatype)
+        used_layers.add((layer, datatype))
+
+    unmapped = materials.keys() - layer_map.keys()
+    if unmapped:
+        raise ValueError(f"unmapped trace roles: {', '.join(sorted(unmapped))}")
+    for role in layer_map:
+        entries = materials.get(role)
+        if not isinstance(entries, list) or not entries:
+            raise ValueError(f"material role {role!r} has no contours")
+        for entry in entries:
+            contour = entry.get("contour_um") if isinstance(entry, dict) else None
+            points = np.asarray(contour, dtype=float)
+            if (points.ndim != 2 or points.shape[1] != 2 or len(points) < 3
+                    or not np.isfinite(points).all()):
+                raise ValueError(f"material role {role!r} needs finite contour_um polygons")
+    return layer_map
+
+
+def validate_material_grid(materials, dbu):
+    """Reject contours with zero area on the grid used for insertion."""
+    for role, entries in materials.items():
+        for entry in entries:
+            points = [(int(x / dbu), int(y / dbu)) for x, y in entry["contour_gds"]]
+            twice_area = sum(x1 * y2 - x2 * y1
+                             for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]))
+            if twice_area == 0:
+                raise ValueError(f"material role {role!r} has a zero-area contour on the KLayout grid")
 
 
 def warp_contour(contour_um, M):
@@ -315,12 +372,15 @@ def build_parser():
                         help="Output directory")
     parser.add_argument("--warp-only", action="store_true",
                         help="Only produce warped outputs, skip KLayout commit")
+    parser.add_argument("--material-layer-map",
+                        help="JSON file mapping trace roles to 'L/D' strings. "
+                             "Omit to use the original four material layers.")
     parser.add_argument("--mcp-config", default=None,
                         help="Path to MCP config JSON file (fallback: "
                              ".mcp.json in CWD, mcp_config.json in project root, then default)")
     parser.add_argument("--verify", action="store_true",
                         help="After commit, count shapes on each material "
-                             "layer (L10/11/12/13) and fail loudly if any "
+                             "layer and fail loudly if any "
                              "expected layer has zero polygons. Catches the "
                              "silent partial-commit failure mode.")
     parser.add_argument("--align-report", default=None,
@@ -363,6 +423,15 @@ def main():
     with open(args.traces) as f:
         traces = json.load(f)
 
+    layer_map = LAYER_MAP
+    if args.material_layer_map is not None:
+        try:
+            if not isinstance(traces, dict) or not isinstance(traces.get("materials"), dict):
+                raise ValueError("traces must contain a materials object")
+            layer_map = load_material_layer_map(args.material_layer_map, traces["materials"])
+        except (OSError, TypeError, ValueError) as exc:
+            parser.error(f"--material-layer-map: {exc}")
+
     img = cv2.imread(args.image)
     if img is None:
         print(f"ERROR: could not read image: {args.image}", file=sys.stderr)
@@ -373,6 +442,10 @@ def main():
     # --- Step 1: Warp contours ---
     print("Warping material contours to GDS coordinates...")
     traces_gds = copy.deepcopy(traces)
+    if args.material_layer_map is not None:
+        traces_gds["layer_map"] = {
+            role: f"{layer}/{datatype}" for role, (layer, datatype) in layer_map.items()
+        }
     total_contours = 0
 
     for mat_name, mat_list in traces_gds["materials"].items():
@@ -497,7 +570,7 @@ def main():
     # Step 3a: Load Template.gds into KLayout
     gds_abs = os.path.abspath(args.gds)
     print(f"Loading GDS template: {gds_abs}")
-    _run_step("3a_load_template", f"""
+    template_result = _run_step("3a_load_template", f"""
 import os
 filepath = "{gds_abs}"
 if not os.path.exists(filepath):
@@ -555,9 +628,16 @@ cv.cell = _top_cell
 # actual content instead of empty outlines.
 view.max_hier()
 
-result = {{"status": "ok", "cell": _top_cell.name, "loaded": True, "top_cells": len(top_cell_indices)}}
+result = {{"status": "ok", "cell": _top_cell.name, "loaded": True,
+           "top_cells": len(top_cell_indices), "dbu": _layout.dbu}}
 """)
     print("  GDS template loaded")
+
+    if args.material_layer_map is not None:
+        try:
+            validate_material_grid(traces_gds["materials"], template_result["dbu"])
+        except (ValueError, OverflowError) as exc:
+            parser.error(f"--material-layer-map: {exc}")
 
     # Step 3b: Add warped image as background overlay
     warped_abs = os.path.abspath(warped_path)
@@ -593,7 +673,7 @@ result = {{"status": "ok", "id": img.id(), "box": str(img.box())}}
     n_inserted = 0
     total_candidate_polygons = 0
     for mat_name, mat_list in traces_gds["materials"].items():
-        layer_dt = LAYER_MAP.get(mat_name)
+        layer_dt = layer_map.get(mat_name)
         if layer_dt is None:
             print(f"  WARNING: No layer mapping for '{mat_name}', skipping")
             continue
@@ -642,7 +722,7 @@ result = {"status": "ok"}
     if args.verify:
         expected_layers = []
         for mat_name, mat_list in traces_gds["materials"].items():
-            layer_dt = LAYER_MAP.get(mat_name)
+            layer_dt = layer_map.get(mat_name)
             if layer_dt is None:
                 continue
             if any("contour_gds" in e for e in mat_list):
@@ -650,7 +730,7 @@ result = {"status": "ok"}
         verify_code = """
 view, layout, cell = _get_or_create_view()
 counts = {}
-expected = """ + json.dumps([(m, l, d) for m, l, d in expected_layers]) + """
+expected = """ + repr(expected_layers) + """
 for mat_name, layer, dt in expected:
     try:
         li = layout.layer(layer, dt)
