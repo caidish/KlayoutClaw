@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+adapter_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+python="$adapter_dir/.venv/bin/python"
+if [ ! -x "$python" ]; then
+    printf '%s\n' "Set up the AutoCAD virtual environment first. See docs/autocad.md." >&2
+    exit 1
+fi
+cd "$adapter_dir"
+exec "$python" -m qlay_autocad "$@"

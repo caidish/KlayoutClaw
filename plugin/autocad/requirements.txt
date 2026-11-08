@@ -1,0 +1,5 @@
+ezdxf>=1.4,<2
+gdstk>=0.9.62,<1
+numpy>=1.26,<3
+pyclipper>=1.3,<2
+shapely>=2.1,<3
