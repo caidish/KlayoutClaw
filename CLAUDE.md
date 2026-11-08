@@ -1,6 +1,6 @@
 # KlayoutClaw
 
-MCP server plugin for KLayout GUI — enables AI tools to control KLayout via MCP protocol over HTTP on `127.0.0.1:8765`. macOS only for now.
+MCP server plugin for KLayout GUI — enables AI tools to control KLayout via MCP protocol over HTTP on `127.0.0.1:8765`. See `docs/windows.md` for Windows x64 setup and verification.
 
 ## Directory Structure
 
@@ -113,7 +113,7 @@ KlayoutClaw/
 ├── .claude-plugin/
 │   ├── plugin.json               # Claude Code plugin manifest
 │   └── marketplace.json          # Claude Code marketplace catalog
-├── install.py                    # Copies plugins to ~/.klayout/pymacros/
+├── install.py                    # Copies plugins to the KLayout profile's pymacros/
 ├── mcp_config.json               # MCP client config for Claude Code
 └── TODO.md                       # Task tracking
 ```
@@ -163,7 +163,7 @@ See `docs/tools.md` for full parameter schemas.
 - Install plugin: `python install.py` then restart KLayout
 - MCP client config: `mcp_config.json` (type: http, url: `http://127.0.0.1:8765/mcp`)
 - Test scripts use absolute paths for GDS output — KLayout's CWD is `/`, so relative paths fail
-- `auto_route` subprocess needs `route_worker.py` — searched in `~/Documents/GitHub/KlayoutClaw/tools/` and `~/.klayout/pymacros/`
+- Routing and evaluation workers are found in the KLayout profile or source checkout. On Windows, pass `python_path` or set `PYTHON_PATH` before starting KLayout.
 - **`mw.create_layout(mode)` mode argument** — empirically determined (pya docs are misleading):
   - `mode=0` — **replaces** the current view's layout in place (wipes cells, **keeps image annotations** on the view)
   - `mode=1` — **creates a new tab** with a fresh empty layout, auto-switches `current_view()` to it, leaves existing tabs untouched

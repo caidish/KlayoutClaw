@@ -28,33 +28,64 @@ if hasattr(sys.stdout, 'buffer'):
 if hasattr(sys.stderr, 'buffer'):
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-# Early log to verify macro execution
-_early_log = os.path.expanduser("~/.klayout/klayoutclaw.log")
-with open(_early_log, "a") as _f:
-    _f.write("MACRO STARTED (v0.6 QTcpServer)\n")
-
-try:
-    import pya
-    with open(_early_log, "a") as _f:
-        _f.write("PYA IMPORTED\n")
-except Exception as _e:
-    with open(_early_log, "a") as _f:
-        _f.write("PYA IMPORT FAILED: {}\n".format(_e))
-
+import pya
 import json
 import re
+import subprocess
 import uuid
 import datetime
 import traceback as _tb_mod
 
-with open(_early_log, "a") as _f:
-    _f.write("ALL IMPORTS OK\n")
+_app_data_path = pya.Application.instance().application_data_path()
+_log_path = os.path.join(_app_data_path or tempfile.gettempdir(), "klayoutclaw.log")
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 
-_log_path = os.path.expanduser("~/.klayout/klayoutclaw.log")
+def _temp_output_path(filename):
+    # Keep the existing Unix output locations. Windows has no /tmp directory.
+    folder = tempfile.gettempdir() if sys.platform == "win32" else "/tmp"
+    return os.path.join(folder, filename)
+
+
+def _payload_roots():
+    macro_file = globals().get("__file__")
+    macro_dir = None
+    if macro_file and os.path.isfile(macro_file):
+        macro_dir = os.path.dirname(os.path.abspath(macro_file))
+        yield macro_dir
+    if _app_data_path:
+        yield os.path.join(_app_data_path, "pymacros")
+    if macro_dir:
+        yield os.path.dirname(macro_dir)
+    yield os.path.expanduser("~/Documents/GitHub/KlayoutClaw")
+    yield os.path.expanduser("~/testFolder/KlayoutClaw")
+
+
+def _find_worker(filename):
+    for root in _payload_roots():
+        for relative in (filename, os.path.join("tools", filename)):
+            candidate = os.path.join(root, relative)
+            if os.path.isfile(candidate):
+                return candidate
+    raise ValueError("{} not found. Install the plugin with 'python install.py' and restart KLayout.".format(filename))
+
+
+def _worker_command(python_path, conda_env, worker_path, config_path):
+    python_path = python_path or os.environ.get("PYTHON_PATH")
+    if python_path:
+        return [os.path.expanduser(python_path), "-X", "utf8", worker_path, config_path]
+    if sys.platform == "win32":
+        raise ValueError(
+            "On Windows, pass python_path pointing to the worker environment's python.exe, "
+            "or set PYTHON_PATH before launching KLayout. See docs/windows.md."
+        )
+    for folder in ("miniforge3", "anaconda3", "miniconda3"):
+        conda_sh = os.path.expanduser("~/{}/etc/profile.d/conda.sh".format(folder))
+        if os.path.isfile(conda_sh):
+            return [
+                "bash", "-c", 'source "$1" &amp;&amp; conda activate "$2" &amp;&amp; exec python -X utf8 "$3" "$4"',
+                "klayoutclaw-worker", conda_sh, conda_env, worker_path, config_path,
+            ]
+    raise ValueError("conda.sh not found. Checked miniforge3, anaconda3, miniconda3.")
 
 
 def _log(msg):
@@ -469,7 +500,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "filepath": {"type": "string", "description": "Output PNG file path", "default": "/tmp/klayoutclaw_screenshot.png"},
+                "filepath": {"type": "string", "description": "Output PNG file path", "default": _temp_output_path("klayoutclaw_screenshot.png")},
                 "width": {"type": "integer", "description": "Image width in pixels", "default": 1024},
                 "height": {"type": "integer", "description": "Image height in pixels", "default": 768},
                 "zoom_box": {
@@ -588,7 +619,7 @@ TOOLS = [
                 },
                 "pad_layer": {"type": "string", "description": "Layer spec for bonding pads. Required — there is no default."},
                 "tolerance_um": {"type": "number", "description": "Endpoint-to-shape matching tolerance in microns (default 15.0, matching evaluate_design connectivity/route_endpoints so the two tools agree on reachability).", "default": 15.0},
-                "image_path": {"type": "string", "description": "Optional output PNG path for the labeled-crossings image. Defaults to /tmp/route_inspect_&lt;ts&gt;.png. Only written when crossings are detected; with no crossings the response field 'image_path' is null."}
+                "image_path": {"type": "string", "description": "Optional output PNG path for the labeled-crossings image. Defaults to route_inspect_&lt;ts&gt;.png in the platform temporary directory. Only written when crossings are detected; with no crossings the response field 'image_path' is null."}
             },
             "required": ["route_layer", "contact_layers", "pad_layer"]
         }
@@ -706,10 +737,10 @@ def _tool_execute_script(args):
     code = args.get("code")
     if not code:
         raise ValueError("Missing required parameter: code")
-    # Auto-save code block to /tmp/KLayout_Execute/ (best-effort, never blocks execution)
+    # Auto-save code block in the platform temporary directory (best-effort)
     _exec_seq += 1
     try:
-        _save_dir = "/tmp/KLayout_Execute"
+        _save_dir = _temp_output_path("KLayout_Execute")
         os.makedirs(_save_dir, exist_ok=True)
         _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         _save_name = "{}_{:04d}.py".format(_ts, _exec_seq)
@@ -924,7 +955,7 @@ def _tool_screenshot(args):
     if _layout_view is None:
         raise ValueError("No layout view available to capture")
 
-    filepath = args.get("filepath", "/tmp/klayoutclaw_screenshot.png")
+    filepath = args.get("filepath", _temp_output_path("klayoutclaw_screenshot.png"))
     width = args.get("width", 1024)
     height = args.get("height", 768)
     zoom_box = args.get("zoom_box", None)
@@ -947,8 +978,6 @@ def _tool_screenshot(args):
 
 def _tool_auto_route(args):
     """Route connections between pin pairs using external route_worker.py."""
-    import tempfile
-    import subprocess
 
     global _layout, _layout_view, _top_cell
     _ensure_valid_handles()
@@ -1050,48 +1079,12 @@ def _tool_auto_route(args):
     with open(config_json, "w") as f:
         json.dump(config, f)
 
-    # Find route_worker.py
-    worker_candidates = [
-        os.path.expanduser("~/Documents/GitHub/KlayoutClaw/tools/route_worker.py"),
-        os.path.expanduser("~/.klayout/pymacros/route_worker.py"),
-    ]
-    # Also check directory of __file__ if available
-    try:
-        worker_candidates.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "route_worker.py"))
-    except Exception:
-        pass
-    worker_path = None
-    for wp in worker_candidates:
-        if os.path.isfile(wp):
-            worker_path = wp
-            break
-    if worker_path is None:
-        raise ValueError("route_worker.py not found. Install the plugin with 'python install.py' or place route_worker.py in one of: " + ", ".join(worker_candidates))
-    _log("auto_route: using worker {}".format(worker_path))
-
-    # Spawn subprocess
-    python_path = python_path or os.environ.get("PYTHON_PATH")
-    if python_path:
-        cmd = "{} {} {}".format(python_path, worker_path, config_json)
-    else:
-        conda_sh = None
-        for p in [os.path.expanduser("~/miniforge3/etc/profile.d/conda.sh"),
-                   os.path.expanduser("~/anaconda3/etc/profile.d/conda.sh"),
-                   os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")]:
-            if os.path.isfile(p):
-                conda_sh = p
-                break
-        if conda_sh is None:
-            raise ValueError("conda.sh not found. Checked miniforge3, anaconda3, miniconda3.")
-        cmd = 'source {} &amp;&amp; conda activate {} &amp;&amp; python {} {}'.format(
-            conda_sh,
-            conda_env, worker_path, config_json
-        )
+    worker_path = _find_worker("route_worker.py")
+    cmd = _worker_command(python_path, conda_env, worker_path, config_json)
     _log("auto_route: running: {}".format(cmd))
     try:
         proc = subprocess.run(
-            ["bash", "-c", cmd],
-            capture_output=True, text=True, timeout=timeout_sec
+            cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout_sec
         )
     except subprocess.TimeoutExpired:
         raise ValueError("Routing timed out after {} seconds. The layout may be too complex — try increasing map_resolution, reducing obstacles, or raising the 'timeout' parameter (max 600).".format(int(timeout_sec)))
@@ -1371,7 +1364,7 @@ def _tool_route_inspect(args):
     if image_path_arg:
         labeled_image_path = os.path.abspath(str(image_path_arg))
     else:
-        labeled_image_path = "/tmp/route_inspect_{}.png".format(int(_time.time()))
+        labeled_image_path = _temp_output_path("route_inspect_{}.png".format(int(_time.time())))
 
     dbu = _layout.dbu
     tolerance_dbu = int(round(tolerance_um / dbu))
@@ -1753,8 +1746,6 @@ def _render_route_inspect_crossings_image(routes, crossings, out_path, dbu):
 
 def _tool_evaluate_design(args):
     """Run nanodevice DRC + metric checks using external evaluate_worker.py."""
-    import tempfile
-    import subprocess
 
     global _layout, _layout_view, _top_cell
     _ensure_valid_handles()
@@ -1958,47 +1949,12 @@ def _tool_evaluate_design(args):
         with open(config_json, "w") as f:
             json.dump(config, f)
 
-        # Find evaluate_worker.py
-        worker_candidates = [
-            os.path.expanduser("~/Documents/GitHub/KlayoutClaw/tools/evaluate_worker.py"),
-            os.path.expanduser("~/testFolder/KlayoutClaw/tools/evaluate_worker.py"),
-            os.path.expanduser("~/.klayout/pymacros/evaluate_worker.py"),
-        ]
-        try:
-            worker_candidates.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evaluate_worker.py"))
-        except Exception:
-            pass
-        worker_path = None
-        for wp in worker_candidates:
-            if os.path.isfile(wp):
-                worker_path = wp
-                break
-        if worker_path is None:
-            raise ValueError("evaluate_worker.py not found. Searched: " + ", ".join(worker_candidates))
-        _log("evaluate_design: using worker {}".format(worker_path))
-
-        # Spawn subprocess
-        python_path = python_path or os.environ.get("PYTHON_PATH")
-        if python_path:
-            cmd = "{} {} {}".format(python_path, worker_path, config_json)
-        else:
-            conda_sh = None
-            for p in [os.path.expanduser("~/miniforge3/etc/profile.d/conda.sh"),
-                       os.path.expanduser("~/anaconda3/etc/profile.d/conda.sh"),
-                       os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh")]:
-                if os.path.isfile(p):
-                    conda_sh = p
-                    break
-            if conda_sh is None:
-                raise ValueError("conda.sh not found. Checked miniforge3, anaconda3, miniconda3.")
-            cmd = 'source {} &amp;&amp; conda activate {} &amp;&amp; python {} {}'.format(
-                conda_sh, conda_env, worker_path, config_json
-            )
+        worker_path = _find_worker("evaluate_worker.py")
+        cmd = _worker_command(python_path, conda_env, worker_path, config_json)
         _log("evaluate_design: running: {}".format(cmd))
         try:
             proc = subprocess.run(
-                ["bash", "-c", cmd],
-                capture_output=True, text=True, timeout=timeout_sec
+                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout_sec
             )
         except subprocess.TimeoutExpired:
             raise ValueError("Evaluation timed out after {} seconds. Layout may be too complex — raise the 'timeout' parameter (max 900) or reduce the number of checks.".format(int(timeout_sec)))
@@ -2285,20 +2241,7 @@ def _vc_ensure_handlers_importable():
     """Insert the tools/ directory onto sys.path so ``import
     tools.vc_mcp_handlers`` resolves no matter where the plugin was
     installed from.  Idempotent."""
-    # Candidate parents that contain a ``tools/`` subdir with
-    # ``vc_mcp_handlers.py``.
-    candidates = [
-        os.path.expanduser("~/Documents/GitHub/KlayoutClaw"),
-        os.path.expanduser("~/testFolder/KlayoutClaw"),
-        os.path.expanduser("~/.klayout/pymacros"),
-    ]
-    try:
-        candidates.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    except Exception:
-        pass
-    for parent in candidates:
-        if not parent:
-            continue
+    for parent in _payload_roots():
         handler_path = os.path.join(parent, "tools", "vc_mcp_handlers.py")
         if os.path.isfile(handler_path):
             if parent not in sys.path:
@@ -2489,8 +2432,7 @@ def _handle_jsonrpc(body_str):
 
     # --- notifications/initialized ---
     if method == "notifications/initialized":
-        # Notification — no response body needed
-        return None, 200
+        return None, 202
 
     # --- tools/list ---
     if method == "tools/list":
@@ -2583,9 +2525,10 @@ def _handle_jsonrpc(body_str):
 
 def _http_response(status_code, body_str, extra_headers=None):
     """Build a complete HTTP/1.0 response string."""
-    reason = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 500: "Internal Server Error"}.get(status_code, "Error")
+    reason = {200: "OK", 202: "Accepted", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 413: "Payload Too Large", 500: "Internal Server Error"}.get(status_code, "Error")
     headers = "HTTP/1.0 {} {}\r\n".format(status_code, reason)
-    headers += "Content-Type: application/json\r\n"
+    if body_str:
+        headers += "Content-Type: application/json\r\n"
     headers += "Connection: close\r\n"
     if _session_id:
         headers += "Mcp-Session-Id: {}\r\n".format(_session_id)
@@ -2636,6 +2579,7 @@ class KlayoutClawServer(pya.QTcpServer):
             chunked = False
             headers_done = False
             session_header = None
+            wants_event_stream = False
 
             while conn.isOpen() and conn.state() == pya.QTcpSocket.ConnectedState:
                 if conn.canReadLine():
@@ -2665,6 +2609,8 @@ class KlayoutClawServer(pya.QTcpServer):
                                 chunked = True
                             elif hname == "mcp-session-id":
                                 session_header = hval
+                            elif hname == "accept":
+                                wants_event_stream = "text/event-stream" in hval.lower()
                 else:
                     conn.waitForReadyRead(100)
 
@@ -2707,8 +2653,11 @@ class KlayoutClawServer(pya.QTcpServer):
 
             # --- Route ---
             if method == "GET" and path == "/mcp":
-                resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.6"})
-                conn.write(_http_response(200, resp_body))
+                if wants_event_stream:
+                    conn.write(_http_response(405, "", {"Allow": "POST"}))
+                else:
+                    resp_body = json.dumps({"status": "ok", "server": "KlayoutClaw", "version": "0.6"})
+                    conn.write(_http_response(200, resp_body))
 
             elif method == "POST" and path == "/mcp":
                 body_str = body.decode("utf-8") if isinstance(body, bytes) else body
@@ -2716,8 +2665,7 @@ class KlayoutClawServer(pya.QTcpServer):
                 if rpc_resp is not None:
                     conn.write(_http_response(status, json.dumps(rpc_resp)))
                 else:
-                    # Notification — return 200 with empty JSON
-                    conn.write(_http_response(200, ""))
+                    conn.write(_http_response(status, ""))
 
             else:
                 conn.write(_http_response(404, json.dumps({"error": "Not Found"})))
@@ -2749,15 +2697,8 @@ class KlayoutClawServer(pya.QTcpServer):
 _server = None
 
 try:
-    with open(_early_log, "a") as _f:
-        _f.write("CREATING SERVER...\n")
     _server = KlayoutClawServer()
-    with open(_early_log, "a") as _f:
-        _f.write("SERVER CREATED OK\n")
-except Exception as e:
-    import traceback
-    with open(_early_log, "a") as _f:
-        _f.write("FATAL: {}\n{}\n".format(e, traceback.format_exc()))
-    _log("FATAL: Failed to create server: " + str(e))
+except Exception:
+    _log("FATAL: Failed to create server:\n{}".format(_tb_mod.format_exc()))
 </text>
 </klayout-macro>
