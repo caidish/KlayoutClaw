@@ -46,13 +46,20 @@ edges to distinguish the two graphite regions before committing them.
 
 ## Construct the masks
 
+Use straight polygon edges for the new process geometry. Draw lead bends with a
+small number of straight segments. Use square or chamfered corners for mask
+openings, including selective top-gate etch. Avoid arcs, rounded rectangles, and
+dense groups of short segments that approximate an arc.
+
 1. Place the channel and contacts in a region with enough retained material
    and space for fan-out. Widen leads at their assigned chip electrodes when
    the process calls for greater overlap. Preserve the specified finger widths.
 2. Place continuous isolation cuts between neighboring electrodes where
    residual conducting material could connect them. Extend each cut across
    the entire relevant flake, including flakes beyond the main stack, while
-   preserving the intended channel and gate supply paths.
+   preserving the intended channel and gate supply paths. At each gate, join
+   both gate flank cuts to the exterior isolation trenches of the neighboring
+   endmost Hall contacts. Preserve the graphene contact arms through the join.
 3. Selectively remove top graphite near graphene contacts and keep the top
    gate continuous over the channel. Check the relative edges of shape etch
    and top-gate etch under the specified overlay tolerance. Where the design
@@ -76,6 +83,9 @@ edges to distinguish the two graphite regions before committing them.
 - Confirm the channel is in the retained dual-gated region. Repeat relevant
   isolation and channel checks for the specified relative mask shifts.
 - Verify that each isolation cut reaches beyond the material it must sever.
+  On the saved shape-etch layer, check that each gate flank and its neighboring
+  end-contact trench share a continuous removal region with a junction width
+  that meets the process minimum. Reject gaps and point-only joins.
   Check any required reference window for the intended hBN and bare substrate
   coverage and for clearance from other material and metal.
 - Name the fabrication and template layers required in the delivery. Reread
