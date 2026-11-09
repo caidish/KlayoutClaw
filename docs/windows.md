@@ -1,104 +1,73 @@
-# Run KlayoutClaw on Windows
+# Install KlayoutClaw on Windows
 
-Use a Windows x64 machine with the desktop version of
-[KLayout](https://www.klayout.de/build.html) and 64-bit Python 3.11. Run the
-commands in PowerShell from the KlayoutClaw checkout. KLayout and the client
-run on the same Windows computer.
+Use this guide on a 64-bit Windows PC. You’ll install the plugin in KLayout
+and check that Codex can connect to it on the same computer.
 
-## Install the plugin and open KLayout
+## 1. Install KLayout and Python Install Manager
 
-Save your work and exit KLayout before installing or updating the plugin.
+1. On the [KLayout downloads page](https://www.klayout.de/build.html), download
+   the **64bit installer** for Windows (the file ending in `win64-install.exe`).
+   Open it and follow the setup prompts. Keep the default options.
+2. On the [Python downloads page](https://www.python.org/downloads/windows/),
+   download **Latest Python install manager**. Open the downloaded file and
+   click **Install**. If you already have Python 3.11, you can skip this.
 
-```powershell
-py -3.11 --version
-py -3.11 install.py
-```
+## 2. Download and unzip KlayoutClaw
 
-The installer prints the path where it copied the macros. On most Windows
-machines it is `C:\Users\<you>\KLayout\pymacros`. If you use a custom
-[KLayout home](https://www.klayout.de/command_args.html), set `KLAYOUT_HOME` to
-that absolute directory in PowerShell before installation and launch KLayout
-from the same PowerShell session.
+1. On the [KlayoutClaw project page](../), click **Code → Download ZIP**.
+2. In your **Downloads** folder, right-click the ZIP file, choose
+   **Extract All…**, and click **Extract**.
+3. Open the extracted folder that contains `install.py` (it may appear as
+   `install`) and the `plugin` folder.
 
-Open KLayout in editor mode. From PowerShell, use the actual path to your
-KLayout executable with the `-e` option. For example:
+## 3. Install the plugin
 
-```powershell
-$klayout = 'C:\path\to\klayout_app.exe'
-Start-Process -FilePath $klayout -ArgumentList '-e'
-```
+1. If KLayout is open, save your work and close it.
+2. In the extracted folder, press **Ctrl+L** in File Explorer. Type
+   `powershell` and press **Enter** to open a PowerShell window in that folder.
+3. Copy the first line below into PowerShell and press **Enter**. Wait for it
+   to finish, then do the same with the second line. If you already have
+   Python 3.11, run only the second line.
 
-The plugin starts inside KLayout and listens at
-`http://127.0.0.1:8765/mcp`.
+   ```powershell
+   py install 3.11
+   py -3.11 install.py
+   ```
 
-## Check the connection, drawing and export
+   When you see `Done!`, close PowerShell.
 
-With KLayout open, run:
+## 4. Open KLayout and check the plugin
 
-```powershell
-py -3.11 -X utf8 tests/check_klayout_gui.py
-```
+Open **Start**, search for **KLayout**, and choose the shortcut marked
+**Editor**. Look at the bottom of the KLayout window for **MCP: Running**
+with a green dot. Leave KLayout open while you use the plugin.
 
-The check connects to MCP, creates a temporary tab, draws a rectangle on
-`20/9`, saves a PNG and GDS in a temporary path with spaces and Chinese
-characters, and reads the GDS back. It prints the actual KLayout version,
-profile and output folder. Leave the test tab active until the script closes it.
+## 5. Connect Codex and try it
 
-## Check routing and design evaluation
+1. Open Codex in the [ChatGPT desktop app](https://chatgpt.com/download/) on
+   the same PC and sign in if prompted. Go to **Settings → MCP servers → Add server**.
+2. Name the server `klayoutclaw`, choose **Streamable HTTP**, and paste
+   `http://127.0.0.1:8765/mcp` into the URL field. Save, then click **Restart**.
+3. Start a new local Codex chat. If asked to choose a folder, select the one
+   you extracted. Send “Call KlayoutClaw’s ping tool and tell me
+   its status.” If it returns `ok`, you’re connected.
 
-Use a separate Python virtual environment for the workers:
+See the [Codex setup instructions](https://learn.chatgpt.com/docs/extend/mcp#configure-in-the-chatgpt-desktop-app)
+for help finding these settings.
 
-```powershell
-py -3.11 -m venv ".tmp\Worker Python"
-$worker = (Resolve-Path ".tmp\Worker Python\Scripts\python.exe").Path
-& $worker -m pip install "klayout==0.30.3" numpy scipy scikit-image gdstk shapely
-py -3.11 -X utf8 tests/check_klayout_gui.py --worker-python "$worker"
-```
+## If you get stuck
 
-The final run should also print `PASS auto_route` and `PASS evaluate_design`.
-For normal work, give the two tools the full path as `python_path`, or launch
-KLayout with `PYTHON_PATH` set to use that interpreter for all calls:
+- If PowerShell doesn’t recognize `py`, finish installing Python Install
+  Manager, then open a new PowerShell window from the extracted folder.
+- If `py install 3.11` says it can’t open a file named `install`, run
+  `pymanager install 3.11` and then continue with the second line.
+- If PowerShell can’t find `install.py`, repeat step 3 from the folder that
+  contains it.
+- If **MCP: Running** is missing, close all KLayout windows and reopen the
+  Editor. If the Editor shortcut is missing, enable **Edit mode** under
+  **File → Setup → Application**, then restart KLayout.
+- If Codex can’t connect, check that KLayout is still open and that the URL
+  in Codex matches the one in step 5.
 
-```powershell
-$env:PYTHON_PATH = $worker
-Start-Process -FilePath $klayout -ArgumentList '-e'
-```
-
-Exit the previous KLayout process before launching it with the new environment.
-You can then check the running server's configured worker Python with
-`py -3.11 -X utf8 tests/check_klayout_gui.py --workers-from-server-env`.
-
-## Finish an isolated validation run
-
-For automated checks, install into a disposable KLayout profile and start
-that test instance with PowerShell's -WindowStyle Hidden and -PassThru.
-Keep the returned process object and put cleanup in a finally block. Close
-that test instance on both success and failure, wait for it to exit, and
-end any terminal job that was waiting on it before reporting completion.
-If the disposable instance cannot close normally, stop that exact process.
-Keep any separate KLayout window opened for the user's design review.
-
-Routing and design-evaluation workers run without opening their own Windows
-console windows. Their output is still captured for diagnostics.
-
-## Use Codex locally
-
-Open the checkout as a local project in Codex on Windows. To let Codex call
-the KLayout tools directly, add or update this entry in the project's
-`.codex/config.toml`, then start a new chat in the trusted project. See
-[OpenAI Docs for MCP configuration](https://developers.openai.com/codex/mcp).
-
-```toml
-[mcp_servers.klayoutclaw]
-url = "http://127.0.0.1:8765/mcp"
-tool_timeout_sec = 120
-```
-
-Ask Codex to call KlayoutClaw's `ping` tool. You can also ask it to run
-`py -3.11 -X utf8 tests/check_klayout_gui.py` from the project root and report
-the `PASS` lines or the first failure. The test uses synthetic geometry and
-leaves your existing drawings alone.
-
-If the server is unreachable, compare the install path with the KLayout
-profile and check `klayoutclaw.log` in that profile. For a failed test, capture
-the first `FAIL` line, the KLayout version and the last relevant log lines.
+For automatic routing, design evaluation, or testing drawing and file exports,
+see [Advanced Windows setup and validation](windows-validation.md).
