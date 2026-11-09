@@ -41,7 +41,7 @@ def test_windows_explicit_python_path_overrides_env_without_shell(macro_helpers)
     worker = r"C:\KLayout Home\pymacros\route_worker.py"
     config = r"C:\Temp 测试\config.json"
     assert macro_helpers["_worker_command"](python, "instrMCPdev", worker, config) == [
-        python, "-X", "utf8", worker, config,
+        python, "-E", "-X", "utf8", worker, config,
     ]
 
 

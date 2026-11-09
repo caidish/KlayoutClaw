@@ -36,6 +36,9 @@ import uuid
 import datetime
 import traceback as _tb_mod
 
+# A GUI-launched Python worker must not create a Windows console window.
+_WORKER_CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 _app_data_path = pya.Application.instance().application_data_path()
 _log_path = os.path.join(_app_data_path or tempfile.gettempdir(), "klayoutclaw.log")
 
@@ -72,7 +75,11 @@ def _find_worker(filename):
 def _worker_command(python_path, conda_env, worker_path, config_path):
     python_path = python_path or os.environ.get("PYTHON_PATH")
     if python_path:
-        return [os.path.expanduser(python_path), "-X", "utf8", worker_path, config_path]
+        python_args = ["-X", "utf8"]
+        if sys.platform == "win32":
+            # KLayout can inject its bundled Python paths into subprocesses.
+            python_args.insert(0, "-E")
+        return [os.path.expanduser(python_path), *python_args, worker_path, config_path]
     if sys.platform == "win32":
         raise ValueError(
             "On Windows, pass python_path pointing to the worker environment's python.exe, "
@@ -1084,7 +1091,7 @@ def _tool_auto_route(args):
     _log("auto_route: running: {}".format(cmd))
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout_sec
+            cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout_sec, creationflags=_WORKER_CREATION_FLAGS
         )
     except subprocess.TimeoutExpired:
         raise ValueError("Routing timed out after {} seconds. The layout may be too complex — try increasing map_resolution, reducing obstacles, or raising the 'timeout' parameter (max 600).".format(int(timeout_sec)))
@@ -1954,7 +1961,7 @@ def _tool_evaluate_design(args):
         _log("evaluate_design: running: {}".format(cmd))
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout_sec
+                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout_sec, creationflags=_WORKER_CREATION_FLAGS
             )
         except subprocess.TimeoutExpired:
             raise ValueError("Evaluation timed out after {} seconds. Layout may be too complex — raise the 'timeout' parameter (max 900) or reduce the number of checks.".format(int(timeout_sec)))

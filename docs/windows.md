@@ -68,6 +68,19 @@ Exit the previous KLayout process before launching it with the new environment.
 You can then check the running server's configured worker Python with
 `py -3.11 -X utf8 tests/check_klayout_gui.py --workers-from-server-env`.
 
+## Finish an isolated validation run
+
+For automated checks, install into a disposable KLayout profile and start
+that test instance with PowerShell's -WindowStyle Hidden and -PassThru.
+Keep the returned process object and put cleanup in a finally block. Close
+that test instance on both success and failure, wait for it to exit, and
+end any terminal job that was waiting on it before reporting completion.
+If the disposable instance cannot close normally, stop that exact process.
+Keep any separate KLayout window opened for the user's design review.
+
+Routing and design-evaluation workers run without opening their own Windows
+console windows. Their output is still captured for diagnostics.
+
 ## Use Codex locally
 
 Open the checkout as a local project in Codex on Windows. To let Codex call
