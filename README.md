@@ -43,6 +43,13 @@ Then just ask:
 
 > *"Create a Hall bar with a 100×25 µm graphene channel, 6 side probes, and bonding pads. Save as hallbar.gds."*
 
+### Optional AutoCAD backend for Mac
+
+Use the [AutoCAD setup guide](docs/autocad.md) to build the native bridge and
+connect a local stdio MCP client to full AutoCAD 2027 on Apple Silicon.
+The project-level AutoCAD entry uses its own tools and
+[Skill](skills/autocad/SKILL.md).
+
 ## What's Inside
 
 | Layer | Purpose |

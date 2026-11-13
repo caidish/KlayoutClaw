@@ -14,7 +14,11 @@ Skills are Claude Code plugins that wrap KlayoutClaw MCP tools into task-oriente
 
 After installation the four core skills are directly invocable as `/klayoutclaw:{geometry,display,image,visual}`. The nanodevice pipelines (`nanodevice_flakedetect`, `nanodevice_gdsalign`, `nanodevice_routing`, `nanodevice_e2e_design`) and `klayout_gds_import` auto-load by description when the user's request matches — Claude picks them without a slash command.
 
-All scripts share a common MCP client (`skills/scripts/mcp_client.py`) that connects to KLayout at `127.0.0.1:8765`.
+The KLayout scripts share a common MCP client (`skills/scripts/mcp_client.py`) that connects to KLayout at `127.0.0.1:8765`.
+
+For the optional AutoCAD backend, see the
+[AutoCAD Skill](../skills/autocad/SKILL.md) and
+[setup guide](autocad.md).
 
 ---
 
