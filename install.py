@@ -1,14 +1,36 @@
 #!/usr/bin/env python
 """Install KlayoutClaw MCP server plugin into KLayout's pymacros directory."""
 
+import os
 import shutil
 import sys
 from pathlib import Path
 
 
+def klayout_home():
+    configured = os.environ.get("KLAYOUT_HOME")
+    if configured is not None:
+        if not configured:
+            raise ValueError("KLAYOUT_HOME is empty. Set it to a directory or unset it before installing.")
+        return Path(configured).expanduser().resolve()
+    if sys.platform == "win32":
+        # Match KLayout's Windows home lookup, including redirected profiles.
+        home_path = os.environ.get("HOMEPATH")
+        if home_path is not None:
+            for key in ("HOMEDRIVE", "HOMESHARE"):
+                prefix = os.environ.get(key)
+                if prefix is not None:
+                    return Path(prefix + home_path) / "KLayout"
+        return Path.home() / "KLayout"
+    return Path.home() / ".klayout"
+
+
 def main():
     plugin_dir = Path(__file__).parent / "plugin"
-    klayout_dir = Path.home() / ".klayout" / "pymacros"
+    try:
+        klayout_dir = klayout_home() / "pymacros"
+    except ValueError as exc:
+        sys.exit(str(exc))
     klayout_dir.mkdir(parents=True, exist_ok=True)
 
     for lym_file in ["klayoutclaw_server.lym", "klayoutclaw_ui.lym"]:

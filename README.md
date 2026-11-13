@@ -19,11 +19,11 @@
 
 KlayoutClaw plugs KLayout into the [Model Context Protocol](https://modelcontextprotocol.io/) so Claude, Codex, Cline, or your own agent can create layouts, run `pya` scripts, autoroute pins, and drive full nanodevice fabrication pipelines — all in your existing KLayout GUI.
 
-> **macOS only** for now. Linux / Windows are on the roadmap.
-
 ![Demo](docs/demo.gif)
 
 ## Quick Start
+
+For Windows, follow [Install KlayoutClaw on Windows](docs/windows.md).
 
 ```bash
 git clone https://github.com/caidish/KlayoutClaw.git
@@ -116,6 +116,7 @@ Download sources:
 
 ## Documentation
 
+- [`docs/windows.md`](docs/windows.md) — Windows installation guide
 - [`docs/tools.md`](docs/tools.md) — MCP tool reference (all 19)
 - [`docs/skills.md`](docs/skills.md) — skill catalog
 - [`docs/ui-plugin.md`](docs/ui-plugin.md) — UI panel + status bar

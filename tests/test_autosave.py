@@ -2,7 +2,7 @@
 """Static analysis tests for auto-save execute_script code (#4).
 
 Feature: _tool_execute_script must save every code block to
-/tmp/KLayout_Execute/ with timestamp_sequence naming and metadata
+the platform temporary directory with timestamp_sequence naming and metadata
 header, BEFORE exec(code, ns).
 
 Tests parse the .lym XML, extract the Python AST, and verify
@@ -106,7 +106,7 @@ class TestAutoSaveExists:
     """_tool_execute_script must contain auto-save logic."""
 
     def test_function_references_makedirs(self, server_ast):
-        """Must call os.makedirs to create /tmp/KLayout_Execute/."""
+        """Must create the KLayout_Execute directory."""
         func = _find_function(server_ast, "_tool_execute_script")
         assert func is not None, "_tool_execute_script not found"
         assert _has_reachable_call(func, "makedirs"), (
@@ -114,17 +114,11 @@ class TestAutoSaveExists:
         )
 
     def test_function_references_save_dir_path(self, server_ast):
-        """Must reference the exact /tmp/KLayout_Execute path."""
+        """Use the platform temporary directory for KLayout_Execute."""
         func = _find_function(server_ast, "_tool_execute_script")
         assert func is not None
-        # Check for the directory path — must start with /tmp/
-        string_constants = _get_string_constants(func)
-        save_dir_found = any(
-            "/tmp/KLayout_Execute" in s for s in string_constants
-        )
-        assert save_dir_found, (
-            "_tool_execute_script must reference '/tmp/KLayout_Execute' directory path"
-        )
+        assert _has_reachable_call(func, "_temp_output_path")
+        assert "KLayout_Execute" in _get_string_constants(func)
 
     def test_function_writes_file(self, server_ast):
         """Must open and write a file (the code block) in reachable code."""
