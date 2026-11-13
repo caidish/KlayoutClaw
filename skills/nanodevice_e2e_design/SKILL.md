@@ -9,6 +9,47 @@ A device-agnostic methodology for designing nanodevices on material regions in K
 
 **This is a pure-text orchestrator skill.** No scripts directory. The agent uses MCP tools and sub-skills at each step.
 
+## Optional SOPs
+
+Select SOPs from the user's task request. Resolve the requested files and
+report missing or unreadable files before starting the job.
+
+| SOPs specified | Workflow |
+|---|---|
+| Neither | Start at the existing Pipeline Overview below. Use the existing tool arguments and the four default material layers. |
+| Device only | Use the [bundled general SOP](references/general-sop.md) with the selected device SOP. |
+| General only | Use the selected general SOP and take device rules from the task. |
+| Both | Use both selected files. Apply the device SOP to device and process decisions. |
+
+The [dual-gate graphene Hall bar](references/dual-gate-graphene-hall-bar.md) is
+an editable device SOP template. Load it when the user selects it. In SOP
+mode, use the steps below as tool guidance and the SOPs for task requirements
+and release checks. Explicit task requirements take precedence over SOP defaults.
+
+When the selected device SOP supplies a material map and this task registers
+optical contours against a GDS template, use the following PREPARE handoff:
+
+1. Use the `nanodevice_flakedetect_align`, `nanodevice_flakedetect_detect`, and
+   `nanodevice_flakedetect_combine` sub-skills as needed to produce files.
+   Keep detection through combine separate from the full flake-detection
+   orchestrator, which also runs GDS alignment and commits. Defer all live
+   material insertion to step 4 below.
+2. Fit the GDS warp using `extract_markers.py`, `detect_markers.py`, and
+   `align_gds.py`. Assemble `traces.json` with the SOP's exact roles under
+   `materials` and `contour_um` in the image frame used to fit that warp.
+   Resolve any roles the standard detectors group together.
+3. Save the SOP's complete role-to-`L/D` object as `material_layer_map.json`
+   in the task output directory. Confirm that the pairs are free in the
+   template and separate from fabrication and helper layers.
+4. Make a fresh task-owned KLayout view active. Run `commit_gds.py` once
+   with the validated alignment, `--material-layer-map <path>` and `--verify`.
+   Proceed to ANALYZE using that readback. This call replaces the separate
+   `nanodevice_flakedetect_commit` step.
+
+For an already prepared layout, verify the named roles on their actual
+layers and use those polygons. If the selected SOP requires registration and
+the template or calibration is missing, resolve those inputs before commit.
+
 ---
 
 ## Pipeline Overview
@@ -48,7 +89,10 @@ Check the user's initial prompt against this checklist. Only ask about missing i
 
 Conditional step -- only runs if microscope images are provided.
 
-**If microscope images are provided:**
+**If using a device SOP map with image-to-GDS registration:** Follow the
+PREPARE handoff under Optional SOPs above.
+
+**Otherwise, if microscope images are provided:**
 1. Validate pixel_size via `validate_pixel_size` tool
 2. Dispatch subagent to run `nanodevice_flakedetect` pipeline (align, detect, combine)
 3. Dispatch subagent to run `nanodevice_gdsalign` if a GDS template is provided
